@@ -113,6 +113,29 @@ $('cancel').addEventListener('click', async () => {
   log('已请求取消', 'warn');
 });
 
+$('cleanup').addEventListener('click', async () => {
+  const task = new URL($('download').href, location.origin).searchParams.get('task');
+  if (!task) {
+    log('无法确定任务名', 'err');
+    return;
+  }
+  if (!confirm(`删除 ${task} 的分片目录？\n\n成品文件不受影响，但删除后无法再续传。`)) return;
+
+  const res = await fetch('/api/cleanup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task }),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    log(`已清理分片，释放 ${(data.freedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`, 'ok');
+  } else {
+    const err = await res.json().catch(() => ({}));
+    log(`清理失败：${err.error || res.status}`, 'err');
+  }
+});
+
 const events = new EventSource('/api/events');
 
 events.onmessage = (message) => {

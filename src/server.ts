@@ -1,8 +1,8 @@
 import { createReadStream } from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DownloadTask } from './task.ts';
 import type { TaskEvent } from './types.ts';
@@ -121,6 +121,17 @@ function defaultOutDir(url: string): string {
 
 const DOWNLOADS_DIR = resolve(process.cwd(), 'downloads');
 
+async function dirSize(dir: string): Promise<number> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  let total = 0;
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) total += await dirSize(full);
+    else total += (await stat(full).catch(() => ({ size: 0 }))).size;
+  }
+  return total;
+}
+
 /**
  * 解析要下载的产物：
  *   1. ?task=<任务名> 指定
@@ -187,7 +198,49 @@ const server = createServer((req, res) => {
           'Content-Length': String(info.size),
           'Content-Disposition': `attachment; filename="${out.name}"`,
         });
-        createReadStream(out.path).pipe(res);
+
+        // 客户端中断时必须销毁读流，否则文件句柄会一直占着，导致文件无法删除
+        const fileStream = createReadStream(out.path);
+        fileStream.on('error', () => {
+          if (!res.headersSent) res.writeHead(500);
+          res.destroy();
+        });
+        res.on('close', () => fileStream.destroy());
+        fileStream.pipe(res);
+        return;
+      }
+
+      if (path === '/api/cleanup' && req.method === 'POST') {
+        const body = await readJson(req);
+        const taskName = String(body.task ?? '');
+        if (!/^[\w.-]+$/.test(taskName)) {
+          json(res, 400, { error: '任务名不合法' });
+          return;
+        }
+
+        // 本次会话的产物可能在自定义目录；重启后只能按 downloads/<任务名> 定位
+        let taskDir: string | null = null;
+        if (session.output && basename(dirname(session.output.path)) === taskName) {
+          taskDir = dirname(session.output.path);
+        } else {
+          const candidate = resolve(DOWNLOADS_DIR, taskName);
+          if (await stat(candidate).catch(() => null)) taskDir = candidate;
+        }
+
+        if (!taskDir) {
+          json(res, 404, { error: '找不到该任务的目录' });
+          return;
+        }
+
+        const segmentsDir = join(taskDir, 'segments');
+        if (!(await stat(segmentsDir).catch(() => null))) {
+          json(res, 404, { error: '该任务没有分片目录（可能已清理）' });
+          return;
+        }
+
+        const before = await dirSize(segmentsDir);
+        await rm(segmentsDir, { recursive: true, force: true });
+        json(res, 200, { ok: true, freedBytes: before, dir: taskDir });
         return;
       }
 

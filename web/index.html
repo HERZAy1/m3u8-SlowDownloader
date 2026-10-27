@@ -67,7 +67,10 @@
           <b id="resultname">—</b>
           <span id="resultsize"></span>
         </div>
-        <a id="download" class="primary" href="/api/download" download>下载文件</a>
+        <div class="result-actions">
+          <button id="cleanup" title="删除已合并的分片，释放磁盘空间（删除后无法续传）">清理分片</button>
+          <a id="download" class="primary" href="/api/download" download>下载文件</a>
+        </div>
       </section>
 
       <pre id="log" class="log"></pre>
