@@ -1,0 +1,15 @@
+# 任务书只保留在本地，不同步到仓库
+m3u8-downloader-task.md
+
+# 下载产物
+downloads/
+tmp-*/
+
+# 依赖与构建输出
+node_modules/
+dist/
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db
