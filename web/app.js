@@ -1,8 +1,11 @@
 const $ = (id) => document.getElementById(id);
 
 const logEl = $('log');
+const emptyEl = $('empty');
 const fillEl = $('fill');
 const MAX_LINES = 4000;
+const SETTINGS_KEY = 'm3u8dl.settings';
+const FORM_INPUTS = ['url', 'speed', 'jitter', 'retries', 'limit', 'out', 'remux'];
 
 let paused = false;
 let total = 0;
@@ -35,10 +38,19 @@ function nearBottom() {
 }
 
 function push(node) {
+  if (emptyEl) emptyEl.classList.add('hide');
   const stick = nearBottom();
   logEl.appendChild(node);
-  while (logEl.childElementCount > MAX_LINES) logEl.removeChild(logEl.firstChild);
+  while (logEl.childElementCount > MAX_LINES + 1) logEl.removeChild(logEl.firstChild);
   if (stick) logEl.scrollTop = logEl.scrollHeight;
+}
+
+function clearLog() {
+  logEl.innerHTML = '';
+  if (emptyEl) {
+    emptyEl.classList.remove('hide');
+    logEl.appendChild(emptyEl);
+  }
 }
 
 /** 里程碑行：加粗标题 + 灰色附注 */
@@ -117,6 +129,9 @@ function setRunning(running) {
   $('pause').disabled = !running;
   $('pause').textContent = '暂停';
   paused = false;
+
+  for (const id of FORM_INPUTS) $(id).disabled = running;
+  for (const chip of document.querySelectorAll('#speedchips button')) chip.disabled = running;
 }
 
 function renderProgress(snap) {
@@ -141,12 +156,46 @@ function showResult(path, bytes) {
   $('result').hidden = false;
 }
 
+/* ---------------- 设置持久化 ---------------- */
+
+function saveSettings() {
+  const data = {
+    url: $('url').value,
+    speed: $('speed').value,
+    jitter: $('jitter').value,
+    retries: $('retries').value,
+    out: $('out').value,
+    remux: $('remux').checked,
+  };
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
+  } catch {
+    /* 隐私模式下 localStorage 可能不可用，忽略 */
+  }
+}
+
+function loadSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function syncChips() {
+  const value = Number($('speed').value);
+  for (const chip of document.querySelectorAll('#speedchips button')) {
+    chip.classList.toggle('on', Number(chip.dataset.speed) === value);
+  }
+}
+
 /* ---------------- 操作 ---------------- */
 
 async function start() {
   const url = $('url').value.trim();
   if (!url) {
     note('请先填写播放列表地址');
+    $('url').focus();
     return;
   }
 
@@ -174,7 +223,8 @@ async function start() {
     return;
   }
 
-  logEl.innerHTML = '';
+  saveSettings();
+  clearLog();
   total = 0;
   fillEl.style.width = '0%';
   $('result').hidden = true;
@@ -226,6 +276,35 @@ $('cleanup').addEventListener('click', async () => {
   } else {
     const err = await res.json().catch(() => ({}));
     note(`清理失败：${err.error || res.status}`);
+  }
+});
+
+$('speedchips').addEventListener('click', (event) => {
+  const chip = event.target.closest('button[data-speed]');
+  if (!chip) return;
+  $('speed').value = chip.dataset.speed;
+  syncChips();
+  saveSettings();
+});
+
+$('speed').addEventListener('input', syncChips);
+
+for (const id of ['jitter', 'retries', 'out', 'url']) {
+  $(id).addEventListener('change', saveSettings);
+}
+
+$('remux').addEventListener('change', saveSettings);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !$('start').disabled) {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT') {
+      event.preventDefault();
+      start();
+    }
+  } else if (event.key === 'Escape' && !$('cancel').disabled) {
+    event.preventDefault();
+    $('cancel').click();
   }
 });
 
@@ -309,6 +388,17 @@ events.onmessage = (message) => {
 events.onerror = () => {
   // EventSource 自动重连
 };
+
+/* ---------------- 初始化 ---------------- */
+
+const saved = loadSettings();
+if (saved.url) $('url').value = saved.url;
+if (saved.speed !== undefined) $('speed').value = saved.speed;
+if (saved.jitter !== undefined) $('jitter').value = saved.jitter;
+if (saved.retries !== undefined) $('retries').value = saved.retries;
+if (saved.out !== undefined) $('out').value = saved.out;
+if (saved.remux !== undefined) $('remux').checked = Boolean(saved.remux);
+syncChips();
 
 fetch('/api/state')
   .then((r) => r.json())

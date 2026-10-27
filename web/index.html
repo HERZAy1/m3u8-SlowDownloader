@@ -3,51 +3,75 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>m3u8 下载器</title>
+    <meta name="color-scheme" content="dark" />
+    <title>m3u8 Downloader</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <h1>m3u8 下载器</h1>
-        <p class="sub">按 <code>#EXTINF</code> 节奏缓速下载，输出原始 <code>.ts</code></p>
-      </header>
+    <div class="topbar">
+      <div class="brand">
+        <span class="mark">▶</span>
+        <span class="name">m3u8 Downloader</span>
+        <span class="ver">v0.1.0</span>
+      </div>
+      <a class="gh" href="https://github.com/HERZAy1/m3u8-Downloader" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
 
+    <main>
       <section class="card">
         <label class="field wide">
-          <span>播放列表地址</span>
-          <input id="url" type="url" placeholder="https://…/play.m3u8" autocomplete="off" />
+          <span class="label">播放列表地址</span>
+          <input
+            id="url"
+            type="url"
+            placeholder="https://…/play.m3u8"
+            autocomplete="off"
+            spellcheck="false"
+          />
         </label>
 
         <div class="grid">
+          <div class="field">
+            <span class="label">倍速</span>
+            <input id="speed" type="number" value="2" min="0" max="50" step="0.5" />
+            <div class="chips" id="speedchips">
+              <button type="button" data-speed="1">1x</button>
+              <button type="button" data-speed="2">2x</button>
+              <button type="button" data-speed="4">4x</button>
+              <button type="button" data-speed="8">8x</button>
+            </div>
+          </div>
           <label class="field">
-            <span>倍速</span>
-            <input id="speed" type="number" value="2" min="0" step="0.5" />
+            <span class="label">抖动 (ms)</span>
+            <input id="jitter" type="number" value="300" min="0" max="5000" step="50" />
           </label>
           <label class="field">
-            <span>抖动 (ms)</span>
-            <input id="jitter" type="number" value="300" min="0" step="50" />
+            <span class="label">重试次数</span>
+            <input id="retries" type="number" value="3" min="0" max="10" step="1" />
           </label>
           <label class="field">
-            <span>重试次数</span>
-            <input id="retries" type="number" value="3" min="0" step="1" />
-          </label>
-          <label class="field">
-            <span>只下前 N 片</span>
+            <span class="label">只下前 N 片</span>
             <input id="limit" type="number" placeholder="全部" min="1" step="1" />
           </label>
         </div>
 
         <label class="field wide">
-          <span>输出目录</span>
-          <input id="out" type="text" placeholder="留空则自动命名为 downloads/&lt;任务名&gt;" autocomplete="off" />
+          <span class="label">输出目录</span>
+          <input
+            id="out"
+            type="text"
+            placeholder="留空 = downloads/&lt;任务名&gt;"
+            autocomplete="off"
+            spellcheck="false"
+          />
         </label>
 
         <div class="actions">
           <button id="start" class="primary">开始下载</button>
           <button id="pause" disabled>暂停</button>
           <button id="cancel" disabled>取消</button>
-          <label class="check"><input id="remux" type="checkbox" /> 拼接后用 ffmpeg 修复时间戳</label>
+          <label class="check"><input id="remux" type="checkbox" /> 用 ffmpeg 修复时间戳</label>
+          <span class="hint">Enter 开始 · Esc 取消</span>
         </div>
       </section>
 
@@ -81,8 +105,18 @@
           <span id="termspeed">—</span>
           <span id="termcount">—</span>
         </div>
-        <div id="log" class="log" role="log" aria-live="off"></div>
+        <div id="log" class="log" role="log" aria-live="off">
+          <div class="empty" id="empty">
+            <b>等待任务</b>
+            <span>填入 m3u8 地址后点「开始下载」，这里会逐片实时输出。</span>
+          </div>
+        </div>
       </section>
+
+      <footer>
+        <span>仅用于下载你有权访问的内容 · 全部在本地运行，不收集任何数据</span>
+        <span>MIT License</span>
+      </footer>
     </main>
     <script src="/app.js"></script>
   </body>
