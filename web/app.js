@@ -2,27 +2,113 @@ const $ = (id) => document.getElementById(id);
 
 const logEl = $('log');
 const fillEl = $('fill');
+const MAX_LINES = 4000;
+
 let paused = false;
+let total = 0;
+
+/* ---------------- 格式化 ---------------- */
+
+const pad = (n) => String(n).padStart(2, '0');
+
+function clock() {
+  const d = new Date();
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
 function fmtDuration(ms) {
-  const total = Math.max(0, Math.round(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return [h, m, s].map((v) => String(v).padStart(2, '0')).join(':');
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
 }
 
 function fmtSize(bytes) {
-  if (!bytes) return '0 MB';
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
-function log(message, cls) {
-  const line = document.createElement('div');
-  if (cls) line.className = cls;
-  line.textContent = message;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
+/* ---------------- 输出区 ---------------- */
+
+function nearBottom() {
+  return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48;
+}
+
+function push(node) {
+  const stick = nearBottom();
+  logEl.appendChild(node);
+  while (logEl.childElementCount > MAX_LINES) logEl.removeChild(logEl.firstChild);
+  if (stick) logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** 里程碑行：加粗标题 + 灰色附注 */
+function banner(title, ...meta) {
+  const el = document.createElement('div');
+  el.className = 'banner';
+  const strong = document.createElement('b');
+  strong.textContent = title;
+  el.appendChild(strong);
+  for (const item of meta) {
+    const span = document.createElement('span');
+    span.className = 'dim';
+    span.textContent = `  ${item}`;
+    el.appendChild(span);
+  }
+  push(el);
+}
+
+/** 普通附注行 */
+function note(text) {
+  const el = document.createElement('div');
+  el.className = 'banner';
+  el.textContent = text;
+  push(el);
+}
+
+/** 表格化的一行 */
+function row(cells, cls) {
+  const el = document.createElement('div');
+  el.className = `ln${cls ? ` ${cls}` : ''}`;
+  for (const [name, text] of cells) {
+    const span = document.createElement('span');
+    span.className = name;
+    span.textContent = text;
+    el.appendChild(span);
+  }
+  push(el);
+}
+
+function segmentRow(event) {
+  const pct = total > 0 ? (event.index / total) * 100 : 0;
+  row(
+    [
+      ['t', clock()],
+      ['g', event.ok ? '✓' : '✗'],
+      ['i', `${event.index}/${total || '?'}`],
+      ['p', `${pct.toFixed(1)}%`],
+      ['b', fmtSize(event.bytes)],
+      ['d', `${((event.finishedAt - event.startedAt) / 1000).toFixed(2)}s`],
+    ],
+    event.ok ? 'ok' : 'err',
+  );
+}
+
+function retryRow(event) {
+  row(
+    [
+      ['t', clock()],
+      ['g', '↻'],
+      ['msg', `#${event.index} ${event.message} — 第 ${event.attempt} 次重试`],
+    ],
+    'warn',
+  );
+}
+
+/* ---------------- 状态与进度 ---------------- */
+
+function setState(text, cls) {
+  $('termstate').textContent = text;
+  $('dot').className = `dot ${cls}`;
 }
 
 function setRunning(running) {
@@ -31,6 +117,18 @@ function setRunning(running) {
   $('pause').disabled = !running;
   $('pause').textContent = '暂停';
   paused = false;
+}
+
+function renderProgress(snap) {
+  const pct = snap.total > 0 ? (snap.completed / snap.total) * 100 : 0;
+  fillEl.style.width = `${pct.toFixed(1)}%`;
+  $('pct').textContent = `${pct.toFixed(1)}%`;
+  $('count').textContent = `${snap.completed}/${snap.total}`;
+  $('elapsed').textContent = fmtDuration(snap.elapsedMs);
+  $('eta').textContent = snap.speed > 0 ? fmtDuration(snap.etaMs) : '—';
+  $('size').textContent = fmtSize(snap.bytes);
+  $('termcount').textContent = `${snap.completed}/${snap.total}`;
+  $('termspeed').textContent = snap.speed > 0 ? `${snap.speed}x` : '不限速';
 }
 
 function showResult(path, bytes) {
@@ -43,20 +141,12 @@ function showResult(path, bytes) {
   $('result').hidden = false;
 }
 
-function renderProgress(snap) {
-  const pct = snap.total > 0 ? (snap.completed / snap.total) * 100 : 0;
-  fillEl.style.width = `${pct.toFixed(1)}%`;
-  $('pct').textContent = `${pct.toFixed(1)}%`;
-  $('count').textContent = `${snap.completed}/${snap.total}`;
-  $('elapsed').textContent = fmtDuration(snap.elapsedMs);
-  $('eta').textContent = snap.speed > 0 ? fmtDuration(snap.etaMs) : '—';
-  $('size').textContent = fmtSize(snap.bytes);
-}
+/* ---------------- 操作 ---------------- */
 
 async function start() {
   const url = $('url').value.trim();
   if (!url) {
-    log('请填写播放列表地址', 'err');
+    note('请先填写播放列表地址');
     return;
   }
 
@@ -80,15 +170,17 @@ async function start() {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    log(err.error || `启动失败（HTTP ${res.status}）`, 'err');
+    note(`启动失败：${err.error || res.status}`);
     return;
   }
 
   logEl.innerHTML = '';
+  total = 0;
   fillEl.style.width = '0%';
   $('result').hidden = true;
   setRunning(true);
-  log('任务已启动');
+  setState('启动中', 'run');
+  banner('任务启动', `${body.speed}x`, url);
 }
 
 async function control(action) {
@@ -105,18 +197,19 @@ $('pause').addEventListener('click', async () => {
   paused = !paused;
   await control(paused ? 'pause' : 'resume');
   $('pause').textContent = paused ? '继续' : '暂停';
-  log(paused ? '已暂停' : '已继续', 'warn');
+  setState(paused ? '已暂停' : '下载中', paused ? 'idle' : 'run');
+  banner(paused ? '已暂停' : '已继续');
 });
 
 $('cancel').addEventListener('click', async () => {
   await control('cancel');
-  log('已请求取消', 'warn');
+  banner('已请求取消');
 });
 
 $('cleanup').addEventListener('click', async () => {
   const task = new URL($('download').href, location.origin).searchParams.get('task');
   if (!task) {
-    log('无法确定任务名', 'err');
+    note('无法确定任务名');
     return;
   }
   if (!confirm(`删除 ${task} 的分片目录？\n\n成品文件不受影响，但删除后无法再续传。`)) return;
@@ -129,12 +222,14 @@ $('cleanup').addEventListener('click', async () => {
 
   if (res.ok) {
     const data = await res.json();
-    log(`已清理分片，释放 ${(data.freedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`, 'ok');
+    banner('分片已清理', `释放 ${(data.freedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`);
   } else {
     const err = await res.json().catch(() => ({}));
-    log(`清理失败：${err.error || res.status}`, 'err');
+    note(`清理失败：${err.error || res.status}`);
   }
 });
+
+/* ---------------- 事件流 ---------------- */
 
 const events = new EventSource('/api/events');
 
@@ -148,10 +243,13 @@ events.onmessage = (message) => {
 
   switch (event.type) {
     case 'playlist':
-      log(
-        `分片 ${event.total} 个，总时长 ${fmtDuration(event.totalDuration * 1000)}，` +
-          `断点 ${event.discontinuities} 个，${event.isVod ? '静态点播' : '非点播'}`,
-        'ok',
+      total = event.total;
+      banner(
+        '清单解析完成',
+        `${event.total} 片`,
+        fmtDuration(event.totalDuration * 1000),
+        `${event.discontinuities} 个断点`,
+        event.isVod ? '静态点播' : '非点播',
       );
       break;
 
@@ -160,35 +258,47 @@ events.onmessage = (message) => {
       break;
 
     case 'segment':
-      if (!event.ok) log(`分片 ${event.index} 失败`, 'err');
-      else if (event.index % 100 === 0) log(`已下载 ${event.index} 片`, 'ok');
+      segmentRow(event);
       break;
 
     case 'error':
-      log(`分片 ${event.index} 第 ${event.attempt} 次失败：${event.message}`, 'err');
+      retryRow(event);
       break;
 
     case 'log':
-      log(event.message, 'warn');
+      note(event.message);
       break;
 
     case 'done':
       fillEl.style.width = '100%';
       if (event.failed.length > 0) {
-        log(`失败分片 ${event.failed.length} 个，未拼接`, 'err');
+        banner('任务结束', `失败 ${event.failed.length} 片`, '未拼接');
+        setState('有失败', 'err');
       } else if (event.outputPath) {
         showResult(event.outputPath, event.bytes);
-        log('完成，可在上方下载', 'ok');
+        banner('任务完成', fmtDuration(event.elapsedMs), fmtSize(event.bytes), event.outputPath);
+        setState('已完成', 'done');
       } else {
-        log(`完成，用时 ${fmtDuration(event.elapsedMs)}`, 'ok');
+        banner('任务完成', fmtDuration(event.elapsedMs));
+        setState('已完成', 'done');
       }
       setRunning(false);
       break;
 
     case 'phase':
-      if (event.phase === 'merging') log('正在拼接…');
-      if (event.phase === 'remuxing') log('正在用 ffmpeg 修复时间戳…');
-      if (event.phase === 'failed') setRunning(false);
+      if (event.phase === 'parsing') setState('解析清单', 'run');
+      else if (event.phase === 'downloading') setState('下载中', 'run');
+      else if (event.phase === 'merging') {
+        setState('拼接中', 'run');
+        banner('正在拼接分片');
+      } else if (event.phase === 'remuxing') {
+        setState('转封装中', 'run');
+        banner('正在用 ffmpeg 修复时间戳');
+      } else if (event.phase === 'done') setState('已完成', 'done');
+      else if (event.phase === 'failed') {
+        setState('失败', 'err');
+        setRunning(false);
+      }
       break;
 
     default:
@@ -197,7 +307,7 @@ events.onmessage = (message) => {
 };
 
 events.onerror = () => {
-  // EventSource 会自动重连，这里不打断用户
+  // EventSource 自动重连
 };
 
 fetch('/api/state')
@@ -205,11 +315,12 @@ fetch('/api/state')
   .then((state) => {
     if (state.running) {
       setRunning(true);
-      log('检测到已有任务在运行，正在同步进度…', 'warn');
+      setState('运行中', 'run');
+      note('检测到已有任务在运行，正在同步进度…');
     }
     if (state.output) {
       showResult(state.output.path, state.output.size);
-      log('发现已完成的产物，可直接下载', 'ok');
+      note('发现已完成的产物，可直接下载');
     }
   })
   .catch(() => {});

@@ -73,7 +73,16 @@
         </div>
       </section>
 
-      <pre id="log" class="log"></pre>
+      <section class="card term">
+        <div class="term-head">
+          <span class="dot idle" id="dot"></span>
+          <span id="termstate">就绪</span>
+          <span class="grow"></span>
+          <span id="termspeed">—</span>
+          <span id="termcount">—</span>
+        </div>
+        <div id="log" class="log" role="log" aria-live="off"></div>
+      </section>
     </main>
     <script src="/app.js"></script>
   </body>
