@@ -1,8 +1,8 @@
 import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { extname, join, normalize, sep } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DownloadTask } from './task.ts';
 import type { TaskEvent } from './types.ts';
@@ -119,6 +119,39 @@ function defaultOutDir(url: string): string {
   }
 }
 
+const DOWNLOADS_DIR = resolve(process.cwd(), 'downloads');
+
+/**
+ * 解析要下载的产物：
+ *   1. ?task=<任务名> 指定
+ *   2. 本次会话刚完成的任务
+ *   3. downloads/ 下最新的 output.ts（服务重启后仍可取回旧产物）
+ */
+async function resolveOutput(requested: string | null): Promise<{ path: string; name: string } | null> {
+  if (requested && /^[\w.-]+$/.test(requested)) {
+    const candidate = resolve(DOWNLOADS_DIR, requested, 'output.ts');
+    if (await stat(candidate).catch(() => null)) {
+      return { path: candidate, name: `${requested}.ts` };
+    }
+  }
+
+  if (session.output && (await stat(session.output.path).catch(() => null))) {
+    return session.output;
+  }
+
+  const entries = await readdir(DOWNLOADS_DIR, { withFileTypes: true }).catch(() => []);
+  let newest: { path: string; name: string; mtime: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = resolve(DOWNLOADS_DIR, entry.name, 'output.ts');
+    const info = await stat(candidate).catch(() => null);
+    if (info && (!newest || info.mtimeMs > newest.mtime)) {
+      newest = { path: candidate, name: `${entry.name}.ts`, mtime: info.mtimeMs };
+    }
+  }
+  return newest ? { path: newest.path, name: newest.name } : null;
+}
+
 const server = createServer((req, res) => {
   void (async (): Promise<void> => {
     const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
@@ -139,7 +172,7 @@ const server = createServer((req, res) => {
       }
 
       if (path === '/api/download' && req.method === 'GET') {
-        const out = session.output;
+        const out = await resolveOutput(url.searchParams.get('task'));
         if (!out) {
           json(res, 404, { error: '没有可下载的文件' });
           return;
@@ -159,7 +192,13 @@ const server = createServer((req, res) => {
       }
 
       if (path === '/api/state') {
-        json(res, 200, { running: session.running, hasTask: session.task !== null });
+        const out = await resolveOutput(null);
+        const info = out ? await stat(out.path).catch(() => null) : null;
+        json(res, 200, {
+          running: session.running,
+          hasTask: session.task !== null,
+          output: out && info ? { name: out.name, path: out.path, size: info.size } : null,
+        });
         return;
       }
 

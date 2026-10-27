@@ -34,9 +34,12 @@ function setRunning(running) {
 }
 
 function showResult(path, bytes) {
-  const name = path.split(/[\\/]/).pop() || 'output.ts';
+  const parts = String(path).split(/[\\/]/);
+  const name = parts.pop() || 'output.ts';
+  const taskName = parts.pop() || '';
   $('resultname').textContent = name;
-  $('resultsize').textContent = `${fmtSize(bytes)} · ${path}`;
+  $('resultsize').textContent = bytes ? `${fmtSize(bytes)} · ${path}` : path;
+  $('download').href = taskName ? `/api/download?task=${encodeURIComponent(taskName)}` : '/api/download';
   $('result').hidden = false;
 }
 
@@ -180,6 +183,10 @@ fetch('/api/state')
     if (state.running) {
       setRunning(true);
       log('检测到已有任务在运行，正在同步进度…', 'warn');
+    }
+    if (state.output) {
+      showResult(state.output.path, state.output.size);
+      log('发现已完成的产物，可直接下载', 'ok');
     }
   })
   .catch(() => {});
