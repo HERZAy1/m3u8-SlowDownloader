@@ -1,0 +1,184 @@
+import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { extname, join, normalize, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DownloadTask } from './task.ts';
+import type { TaskEvent } from './types.ts';
+
+const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
+const PORT = Number(process.env.PORT ?? 7788);
+const HOST = '127.0.0.1';
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+interface Session {
+  task: DownloadTask | null;
+  running: boolean;
+  events: TaskEvent[];
+  clients: Set<ServerResponse>;
+}
+
+const session: Session = { task: null, running: false, events: [], clients: new Set() };
+
+function broadcast(event: TaskEvent): void {
+  session.events.push(event);
+  if (session.events.length > 3000) session.events.shift();
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of session.clients) client.write(payload);
+}
+
+function json(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(payload);
+}
+
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+}
+
+async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> {
+  const relative = urlPath === '/' ? 'index.html' : urlPath.slice(1);
+  const resolved = normalize(join(WEB_ROOT, relative));
+  if (!resolved.startsWith(normalize(WEB_ROOT + sep))) {
+    res.writeHead(403).end('forbidden');
+    return;
+  }
+  try {
+    const data = await readFile(resolved);
+    res.writeHead(200, { 'Content-Type': MIME[extname(resolved)] ?? 'application/octet-stream' });
+    res.end(data);
+  } catch {
+    res.writeHead(404).end('not found');
+  }
+}
+
+function startTask(body: Record<string, unknown>): void {
+  const url = typeof body.url === 'string' ? body.url.trim() : '';
+  if (!url) throw new Error('缺少播放列表地址');
+
+  const speed = Number(body.speed ?? 2);
+  const outDir = typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : defaultOutDir(url);
+
+  session.events = [];
+  const task = new DownloadTask({
+    url,
+    outDir,
+    speed,
+    jitterMs: Number(body.jitter ?? 300),
+    retries: Number(body.retries ?? 3),
+    limit: body.limit ? Number(body.limit) : undefined,
+    remux: Boolean(body.remux),
+    merge: body.merge !== false,
+  });
+
+  task.on(broadcast);
+  session.task = task;
+  session.running = true;
+
+  task
+    .run()
+    .then((result) => {
+      session.running = false;
+      if (result.failed.length > 0) {
+        broadcast({ type: 'log', message: `有 ${result.failed.length} 个分片失败，未拼接` });
+      }
+    })
+    .catch((err: unknown) => {
+      session.running = false;
+      const message = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'log', message: `任务终止：${message}` });
+      broadcast({ type: 'phase', phase: 'failed' });
+    });
+}
+
+function defaultOutDir(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const base = parsed.pathname.split('/').filter(Boolean).pop() ?? 'task';
+    return `downloads/${base.replace(/\.m3u8?$/i, '') || 'task'}`;
+  } catch {
+    return 'downloads/task';
+  }
+}
+
+const server = createServer((req, res) => {
+  void (async (): Promise<void> => {
+    const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
+    const path = url.pathname;
+
+    try {
+      if (path === '/api/events') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        res.write(': connected\n\n');
+        for (const event of session.events) res.write(`data: ${JSON.stringify(event)}\n\n`);
+        session.clients.add(res);
+        req.on('close', () => session.clients.delete(res));
+        return;
+      }
+
+      if (path === '/api/state') {
+        json(res, 200, { running: session.running, hasTask: session.task !== null });
+        return;
+      }
+
+      if (path === '/api/start' && req.method === 'POST') {
+        if (session.running) {
+          json(res, 409, { error: '已有任务在运行' });
+          return;
+        }
+        startTask(await readJson(req));
+        json(res, 202, { ok: true });
+        return;
+      }
+
+      if (path === '/api/control' && req.method === 'POST') {
+        const body = await readJson(req);
+        const action = String(body.action ?? '');
+        const task = session.task;
+        if (!task) {
+          json(res, 409, { error: '没有任务' });
+          return;
+        }
+        if (action === 'pause') task.pause();
+        else if (action === 'resume') task.resume();
+        else if (action === 'cancel') task.cancel();
+        else {
+          json(res, 400, { error: `未知动作 ${action}` });
+          return;
+        }
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method === 'GET') {
+        await serveStatic(res, path);
+        return;
+      }
+
+      res.writeHead(405).end('method not allowed');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!res.headersSent) json(res, 500, { error: message });
+      else res.end();
+    }
+  })();
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`m3u8 下载器 GUI: http://${HOST}:${PORT}`);
+});

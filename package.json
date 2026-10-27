@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node src/cli.ts",
+    "gui": "node src/server.ts",
     "dry": "node src/cli.ts --dry-run"
   }
 }

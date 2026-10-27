@@ -46,6 +46,20 @@ node src/cli.ts "https://example.com/play.m3u8" --speed 2
 node src/cli.ts "https://example.com/play.m3u8" --limit 5 --speed 20 --out ./tmp
 ```
 
+## GUI
+
+```bash
+node src/server.ts        # 或 npm run gui
+```
+
+浏览器打开 <http://127.0.0.1:7788>。
+
+页面提供：URL 输入、倍速 / 抖动 / 重试 / 限片参数、输出目录、进度条与 ETA、暂停 / 继续 / 取消、事件日志。
+
+前后端通过 HTTP + SSE 通信，前端是原生 HTML/CSS/JS，**无构建步骤、无框架**。若将来需要独立 exe，用 Electron 套壳即可，UI 代码原样复用。
+
+服务只监听 `127.0.0.1`，不对外暴露。端口可用 `PORT` 环境变量覆盖。
+
 ## 输出结构
 
 ```
