@@ -33,6 +33,13 @@ function setRunning(running) {
   paused = false;
 }
 
+function showResult(path, bytes) {
+  const name = path.split(/[\\/]/).pop() || 'output.ts';
+  $('resultname').textContent = name;
+  $('resultsize').textContent = `${fmtSize(bytes)} · ${path}`;
+  $('result').hidden = false;
+}
+
 function renderProgress(snap) {
   const pct = snap.total > 0 ? (snap.completed / snap.total) * 100 : 0;
   fillEl.style.width = `${pct.toFixed(1)}%`;
@@ -76,6 +83,7 @@ async function start() {
 
   logEl.innerHTML = '';
   fillEl.style.width = '0%';
+  $('result').hidden = true;
   setRunning(true);
   log('任务已启动');
 }
@@ -140,9 +148,14 @@ events.onmessage = (message) => {
 
     case 'done':
       fillEl.style.width = '100%';
-      if (event.outputPath) log(`完成，输出：${event.outputPath}`, 'ok');
-      else log(`完成，用时 ${fmtDuration(event.elapsedMs)}`, 'ok');
-      if (event.failed.length > 0) log(`失败分片 ${event.failed.length} 个，未拼接`, 'err');
+      if (event.failed.length > 0) {
+        log(`失败分片 ${event.failed.length} 个，未拼接`, 'err');
+      } else if (event.outputPath) {
+        showResult(event.outputPath, event.bytes);
+        log('完成，可在上方下载', 'ok');
+      } else {
+        log(`完成，用时 ${fmtDuration(event.elapsedMs)}`, 'ok');
+      }
       setRunning(false);
       break;
 

@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, normalize, sep } from 'node:path';
@@ -23,9 +24,10 @@ interface Session {
   running: boolean;
   events: TaskEvent[];
   clients: Set<ServerResponse>;
+  output: { path: string; name: string } | null;
 }
 
-const session: Session = { task: null, running: false, events: [], clients: new Set() };
+const session: Session = { task: null, running: false, events: [], clients: new Set(), output: null };
 
 function broadcast(event: TaskEvent): void {
   session.events.push(event);
@@ -71,6 +73,8 @@ function startTask(body: Record<string, unknown>): void {
   const outDir = typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : defaultOutDir(url);
 
   session.events = [];
+  session.output = null;
+  const taskName = outDir.split(/[\\/]/).pop() || 'output';
   const task = new DownloadTask({
     url,
     outDir,
@@ -90,6 +94,9 @@ function startTask(body: Record<string, unknown>): void {
     .run()
     .then((result) => {
       session.running = false;
+      if (result.outputPath) {
+        session.output = { path: result.outputPath, name: `${taskName}.ts` };
+      }
       if (result.failed.length > 0) {
         broadcast({ type: 'log', message: `有 ${result.failed.length} 个分片失败，未拼接` });
       }
@@ -128,6 +135,26 @@ const server = createServer((req, res) => {
         for (const event of session.events) res.write(`data: ${JSON.stringify(event)}\n\n`);
         session.clients.add(res);
         req.on('close', () => session.clients.delete(res));
+        return;
+      }
+
+      if (path === '/api/download' && req.method === 'GET') {
+        const out = session.output;
+        if (!out) {
+          json(res, 404, { error: '没有可下载的文件' });
+          return;
+        }
+        const info = await stat(out.path).catch(() => null);
+        if (!info) {
+          json(res, 404, { error: '文件已不存在' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(info.size),
+          'Content-Disposition': `attachment; filename="${out.name}"`,
+        });
+        createReadStream(out.path).pipe(res);
         return;
       }
 

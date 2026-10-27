@@ -205,3 +205,44 @@ button.primary:hover:not(:disabled) {
 .log .warn {
   color: var(--warn);
 }
+
+.result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-color: #2f6b3f;
+}
+
+.result .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.result .meta b {
+  font-size: 15px;
+}
+
+.result .meta span {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+a.primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  border-radius: 7px;
+  padding: 8px 18px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+a.primary:hover {
+  background: #3d7bea;
+}

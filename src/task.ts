@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import { CancelledError, TaskControl } from './control.ts';
 import { CHROME_HEADERS } from './headers.ts';
 import { FetchHttpClient } from './http.ts';
@@ -103,9 +104,11 @@ export class DownloadTask {
       };
     }
 
-    const store = new SegmentStore(this.options.outDir);
+    const outDir = resolve(this.options.outDir);
+    const store = new SegmentStore(outDir);
     await store.init();
     await store.savePlaylist(text);
+    this.emit({ type: 'log', message: `输出目录：${outDir}` });
 
     this.emit({ type: 'phase', phase: 'downloading' });
 
@@ -181,7 +184,7 @@ export class DownloadTask {
 
     if (shouldMerge && result.failed.length === 0) {
       this.emit({ type: 'phase', phase: 'merging' });
-      outputPath = `${this.options.outDir}/output.ts`.replace(/\\/g, '/');
+      outputPath = resolve(outDir, 'output.ts');
       await mergeSegments(store, total, { outputPath });
 
       if (this.options.remux) {
