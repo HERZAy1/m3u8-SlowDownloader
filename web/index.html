@@ -75,17 +75,6 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="bar"><div id="fill"></div></div>
-        <div class="stats">
-          <div><b id="pct">0.0%</b><span>当前进度</span></div>
-          <div><b id="count">—</b><span>分片</span></div>
-          <div><b id="elapsed">—</b><span>已用</span></div>
-          <div><b id="eta">—</b><span>剩余</span></div>
-          <div><b id="size">—</b><span>已下载</span></div>
-        </div>
-      </section>
-
       <section class="card queue-card">
         <div class="queue-head">
           <span class="queue-title">队列</span>
@@ -114,9 +103,24 @@
           <span class="dot idle" id="dot"></span>
           <span id="termstate">就绪</span>
           <span class="grow"></span>
+          <span id="termjob"></span>
           <span id="termspeed">—</span>
-          <span id="termcount">—</span>
         </div>
+
+        <div class="progress-strip">
+          <div class="progress-top">
+            <div class="bar"><div id="fill"></div></div>
+            <span id="pct" class="pct">0.0%</span>
+          </div>
+          <div class="progress-meta">
+            <span id="count">—</span>
+            <span id="elapsed">已用 —</span>
+            <span id="eta">剩余 —</span>
+            <span id="size">—</span>
+            <span id="retrynote" class="retry-note"></span>
+          </div>
+        </div>
+
         <div id="log" class="log" role="log" aria-live="off">
           <div class="empty" id="empty">
             <b>等待任务</b>

@@ -24,6 +24,8 @@ let queuePaused = false;
 let jobOrder = new Map();
 let total = 0;
 let maxQueue = 20;
+/** 记录每片最近一次失败原因，供最终失败行使用 */
+const lastError = new Map();
 
 /* ---------------- 格式化 ---------------- */
 
@@ -130,30 +132,16 @@ function row(cells, cls, jobId) {
   push(el);
 }
 
-function segmentRow(event, jobId) {
-  const pct = total > 0 ? (event.index / total) * 100 : 0;
+/** 只输出失败分片；成功的分片由进度条体现，不再逐行刷屏 */
+function failureRow(event, reason, jobId) {
+  const why = reason ? (reason.length > 80 ? `${reason.slice(0, 80)}…` : reason) : '下载失败';
   row(
     [
       ['t', clock()],
-      ['g', event.ok ? '✓' : '✗'],
-      ['i', `${event.index}/${total || '?'}`],
-      ['p', `${pct.toFixed(1)}%`],
-      ['b', fmtSize(event.bytes)],
-      ['d', `${((event.finishedAt - event.startedAt) / 1000).toFixed(2)}s`],
+      ['g', '✗'],
+      ['msg', `#${event.index} ${why}${event.attempts > 1 ? `（共 ${event.attempts} 次尝试）` : ''}`],
     ],
-    event.ok ? 'ok' : 'err',
-    jobId,
-  );
-}
-
-function retryRow(event, jobId) {
-  row(
-    [
-      ['t', clock()],
-      ['g', '↻'],
-      ['msg', `#${event.index} ${event.message} — 第 ${event.attempt} 次重试`],
-    ],
-    'warn',
+    'err',
     jobId,
   );
 }
@@ -170,10 +158,9 @@ function renderProgress(snap) {
   fillEl.style.width = `${pct.toFixed(1)}%`;
   $('pct').textContent = `${pct.toFixed(1)}%`;
   $('count').textContent = `${snap.completed}/${snap.total}`;
-  $('elapsed').textContent = fmtDuration(snap.elapsedMs);
-  $('eta').textContent = snap.speed > 0 ? fmtDuration(snap.etaMs) : '—';
+  $('elapsed').textContent = `已用 ${fmtDuration(snap.elapsedMs)}`;
+  $('eta').textContent = snap.speed > 0 ? `剩余 ${fmtDuration(snap.etaMs)}` : '不限速';
   $('size').textContent = fmtSize(snap.bytes);
-  $('termcount').textContent = `${snap.completed}/${snap.total}`;
   $('termspeed').textContent = snap.speed > 0 ? `${snap.speed}x` : '不限速';
 
   const live = listEl.querySelector('.queue-row.running .q-meta');
@@ -370,6 +357,8 @@ function applyQueue(snap) {
   runningId = snap.runningId;
   queuePaused = snap.paused;
   jobOrder = new Map(queue.map((it, i) => [it.id, i + 1]));
+  const jobIdx = runningId ? jobOrder.get(runningId) : null;
+  $('termjob').textContent = jobIdx && queue.length > 1 ? `#${jobIdx}/${queue.length}` : '';
   renderQueue();
   renderResults();
   updateButtons();
@@ -646,6 +635,13 @@ events.onmessage = (message) => {
   switch (event.type) {
     case 'playlist':
       total = event.total;
+      fillEl.style.width = '0%';
+      $('pct').textContent = '0.0%';
+      $('count').textContent = `0/${event.total}`;
+      $('elapsed').textContent = '已用 —';
+      $('eta').textContent = '剩余 —';
+      $('size').textContent = '—';
+      $('retrynote').textContent = '';
       banner(
         `清单解析完成${jobId && queue.length > 1 ? ` · #${jobOrder.get(jobId) ?? '?'}` : ''}`,
         `${event.total} 片`,
@@ -660,11 +656,20 @@ events.onmessage = (message) => {
       break;
 
     case 'segment':
-      segmentRow(event, jobId);
+      if (event.ok) {
+        lastError.delete(event.index);
+        $('retrynote').textContent = '';
+      } else {
+        failureRow(event, lastError.get(event.index), jobId);
+        lastError.delete(event.index);
+        $('retrynote').textContent = '';
+      }
       break;
 
     case 'error':
-      retryRow(event, jobId);
+      // 重试不刷屏，只在进度条右侧提示当前正在重试哪一片
+      lastError.set(event.index, event.message);
+      $('retrynote').textContent = `#${event.index} 第 ${event.attempt} 次重试`;
       break;
 
     case 'log':
