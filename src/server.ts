@@ -9,7 +9,8 @@ import type { TaskEvent } from './types.ts';
 
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const PORT = Number(process.env.PORT ?? 7788);
-const HOST = '127.0.0.1';
+/** 默认只绑本机；服务器部署时用 HOST=0.0.0.0 开放局域网访问。 */
+const HOST = process.env.HOST ?? '127.0.0.1';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

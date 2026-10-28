@@ -1,0 +1,30 @@
+[Unit]
+Description=m3u8 Downloader (HLS paced downloader)
+Documentation=https://github.com/HERZAy1/m3u8-Downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=debian
+Group=debian
+WorkingDirectory=/opt/m3u8-downloader
+
+# 对外提供局域网访问；只想本机用就删掉 HOST 这一行（默认 127.0.0.1）
+Environment=HOST=0.0.0.0
+Environment=PORT=7788
+
+ExecStart=/usr/local/bin/node src/server.ts
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+
+# 基本加固：只允许写自己的工作目录
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/m3u8-downloader
+
+[Install]
+WantedBy=multi-user.target

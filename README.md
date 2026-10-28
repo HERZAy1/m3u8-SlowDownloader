@@ -105,6 +105,63 @@ node src/cli.ts <url> ...   # 直接用 CLI
 
 ---
 
+## 部署到 Linux 服务器
+
+在 Debian / Ubuntu 上以 systemd 服务常驻运行，含开机自启。
+
+**1. 安装 Node.js**
+
+```bash
+VER=24.21.0
+cd /tmp
+wget -q https://nodejs.org/dist/v$VER/node-v$VER-linux-x64.tar.gz
+wget -q https://nodejs.org/dist/v$VER/SHASUMS256.txt
+sha256sum -c SHASUMS256.txt --ignore-missing
+sudo mkdir -p /opt/node
+sudo tar -xzf node-v$VER-linux-x64.tar.gz -C /opt/node --strip-components=1
+sudo ln -sf /opt/node/bin/node /usr/local/bin/node
+sudo ln -sf /opt/node/bin/npm /usr/local/bin/npm
+```
+
+**2. 部署代码**
+
+把 `src/`、`web/`、`package.json` 传到 `/opt/m3u8-downloader`：
+
+```bash
+sudo mkdir -p /opt/m3u8-downloader
+sudo tar -xzf m3u8dl.tar.gz -C /opt/m3u8-downloader
+sudo chown -R debian:debian /opt/m3u8-downloader
+sudo find /opt/m3u8-downloader -type d -exec chmod 755 {} \;
+sudo find /opt/m3u8-downloader -type f -exec chmod 644 {} \;
+```
+
+**3. 安装 systemd 服务**
+
+```bash
+sudo cp deploy/m3u8-downloader.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now m3u8-downloader
+```
+
+**4. 验证**
+
+```bash
+systemctl status m3u8-downloader
+wget -qO- http://127.0.0.1:7788/api/state
+```
+
+局域网内其他机器访问 `http://<服务器IP>:7788`。
+
+> ⚠️ **安全提示**：服务默认只绑 `127.0.0.1`；单元文件里通过 `HOST=0.0.0.0` 对外开放，且**没有任何登录认证**。请只在可信网络内使用，或改用 SSH 隧道：
+>
+> ```bash
+> ssh -L 7788:127.0.0.1:7788 user@server
+> ```
+>
+> 并把单元文件里的 `Environment=HOST=0.0.0.0` 删掉。
+
+---
+
 ## GUI 使用
 
 启动后访问 <http://127.0.0.1:7788>（仅监听 `127.0.0.1`，外网不可达）。
@@ -322,6 +379,8 @@ web/
 ├── index.html
 ├── app.js
 └── style.css
+deploy/
+└── m3u8-downloader.service   # systemd 单元
 start.cmd              # Windows 一键启动
 ```
 
