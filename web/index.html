@@ -12,7 +12,7 @@
       <div class="brand">
         <span class="mark">▶</span>
         <span class="name">m3u8 Downloader</span>
-        <span class="ver">v0.1.0</span>
+        <span class="ver">v0.2.0</span>
       </div>
       <a class="gh" href="https://github.com/HERZAy1/m3u8-Downloader" target="_blank" rel="noopener">GitHub ↗</a>
     </div>
@@ -20,14 +20,13 @@
     <main>
       <section class="card">
         <label class="field wide">
-          <span class="label">播放列表地址</span>
-          <input
-            id="url"
-            type="url"
-            placeholder="https://…/play.m3u8"
-            autocomplete="off"
+          <span class="label">播放列表地址（每行一个，可一次粘贴多个）</span>
+          <textarea
+            id="urls"
+            rows="3"
+            placeholder="https://…/play-1.m3u8&#10;https://…/play-2.m3u8"
             spellcheck="false"
-          />
+          ></textarea>
         </label>
 
         <div class="grid">
@@ -67,18 +66,19 @@
         </label>
 
         <div class="actions">
-          <button id="start" class="primary">开始下载</button>
+          <button id="enqueue">加入队列</button>
+          <button id="start" class="primary">开始队列</button>
           <button id="pause" disabled>暂停</button>
-          <button id="cancel" disabled>取消</button>
+          <button id="stop" disabled>停止</button>
+          <button id="clear" class="ghost">清空已完成</button>
           <label class="check"><input id="remux" type="checkbox" /> 用 ffmpeg 修复时间戳</label>
-          <span class="hint">Enter 开始 · Esc 取消</span>
         </div>
       </section>
 
       <section class="card">
         <div class="bar"><div id="fill"></div></div>
         <div class="stats">
-          <div><b id="pct">0.0%</b><span>进度</span></div>
+          <div><b id="pct">0.0%</b><span>当前进度</span></div>
           <div><b id="count">—</b><span>分片</span></div>
           <div><b id="elapsed">—</b><span>已用</span></div>
           <div><b id="eta">—</b><span>剩余</span></div>
@@ -86,15 +86,26 @@
         </div>
       </section>
 
-      <section id="result" class="card result" hidden>
-        <div class="meta">
-          <b id="resultname">—</b>
-          <span id="resultsize"></span>
+      <section class="card queue-card">
+        <div class="queue-head">
+          <span class="queue-title">队列</span>
+          <span id="queuecount" class="queue-count">0 / 20</span>
+          <span class="grow"></span>
+          <span id="queuesummary" class="queue-summary"></span>
         </div>
-        <div class="result-actions">
-          <button id="cleanup" title="删除已合并的分片，释放磁盘空间（删除后无法续传）">清理分片</button>
-          <a id="download" class="primary" href="/api/download" download>下载文件</a>
+        <div id="queuelist" class="queue-list">
+          <div class="queue-empty" id="queueempty">队列为空 —— 粘贴地址后点「加入队列」</div>
         </div>
+      </section>
+
+      <section id="results" class="card results" hidden>
+        <div class="results-head">
+          <span class="results-title">结果</span>
+          <span id="resultsummary" class="results-summary"></span>
+          <span class="grow"></span>
+          <button id="retryall" class="primary small" hidden>补齐全部缺失</button>
+        </div>
+        <div id="resultlist" class="results-list"></div>
       </section>
 
       <section class="card term">
@@ -108,7 +119,7 @@
         <div id="log" class="log" role="log" aria-live="off">
           <div class="empty" id="empty">
             <b>等待任务</b>
-            <span>填入 m3u8 地址后点「开始下载」，这里会逐片实时输出。</span>
+            <span>填入 m3u8 地址后点「开始队列」，这里会逐片实时输出。</span>
           </div>
         </div>
       </section>

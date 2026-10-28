@@ -92,3 +92,36 @@ export type TaskEvent =
   | { type: 'error'; index: number; message: string; attempt: number }
   | { type: 'log'; message: string }
   | { type: 'done'; failed: number[]; outputPath: string | null; elapsedMs: number; bytes: number };
+
+/* ---------------- 队列 ---------------- */
+
+export type QueueStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface QueueItemSnapshot {
+  id: string;
+  url: string;
+  status: QueueStatus;
+  /** 输出目录名，用于下载 / 清理时定位 */
+  taskName: string;
+  total: number;
+  downloaded: number;
+  failed: number[];
+  bytes: number;
+  elapsedMs: number;
+  outputPath: string | null;
+  error?: string;
+  addedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+export interface QueueSummaryEntry extends QueueItemSnapshot {
+  index: number;
+}
+
+export type QueueEvent =
+  | { type: 'queue'; items: QueueItemSnapshot[]; runningId: string | null; paused: boolean }
+  | { type: 'queue-done'; summary: QueueSummaryEntry[] };
+
+/** SSE 上传输的所有事件：任务事件带 jobId，队列事件独立成组。 */
+export type ServerEvent = (TaskEvent & { jobId?: string }) | QueueEvent;

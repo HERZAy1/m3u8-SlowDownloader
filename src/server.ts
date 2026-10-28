@@ -2,15 +2,17 @@ import { createReadStream } from 'node:fs';
 import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DownloadTask } from './task.ts';
-import type { TaskEvent } from './types.ts';
+import { DownloadQueue } from './queue.ts';
+import type { ServerEvent } from './types.ts';
 
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const PORT = Number(process.env.PORT ?? 7788);
 /** 默认只绑本机；服务器部署时用 HOST=0.0.0.0 开放局域网访问。 */
 const HOST = process.env.HOST ?? '127.0.0.1';
+const DOWNLOADS_DIR = resolve(process.cwd(), 'downloads');
+const MAX_QUEUE = Number(process.env.MAX_QUEUE ?? 20);
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -21,21 +23,20 @@ const MIME: Record<string, string> = {
 };
 
 interface Session {
-  task: DownloadTask | null;
-  running: boolean;
-  events: TaskEvent[];
+  events: ServerEvent[];
   clients: Set<ServerResponse>;
-  output: { path: string; name: string } | null;
 }
 
-const session: Session = { task: null, running: false, events: [], clients: new Set(), output: null };
+const session: Session = { events: [], clients: new Set() };
 
-function broadcast(event: TaskEvent): void {
+function broadcast(event: ServerEvent): void {
   session.events.push(event);
-  if (session.events.length > 3000) session.events.shift();
+  if (session.events.length > 4000) session.events.shift();
   const payload = `data: ${JSON.stringify(event)}\n\n`;
   for (const client of session.clients) client.write(payload);
 }
+
+const queue = new DownloadQueue(broadcast, MAX_QUEUE);
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -66,61 +67,25 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> 
   }
 }
 
-function startTask(body: Record<string, unknown>): void {
-  const url = typeof body.url === 'string' ? body.url.trim() : '';
-  if (!url) throw new Error('缺少播放列表地址');
+function urlsFrom(body: Record<string, unknown>): string[] {
+  if (Array.isArray(body.urls)) return body.urls.filter((u): u is string => typeof u === 'string');
+  if (typeof body.urls === 'string') return body.urls.split(/\r?\n/);
+  if (typeof body.url === 'string') return [body.url];
+  return [];
+}
 
-  const speed = Number(body.speed ?? 2);
-  const outDir = typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : defaultOutDir(url);
-
-  session.events = [];
-  session.output = null;
-  const taskName = outDir.split(/[\\/]/).pop() || 'output';
-  const task = new DownloadTask({
-    url,
-    outDir,
-    speed,
+function paramsFrom(body: Record<string, unknown>) {
+  return {
+    speed: Number(body.speed ?? 2),
     jitterMs: Number(body.jitter ?? 300),
     retries: Number(body.retries ?? 3),
     limit: body.limit ? Number(body.limit) : undefined,
+    outDir:
+      typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : undefined,
     remux: Boolean(body.remux),
     merge: body.merge !== false,
-  });
-
-  task.on(broadcast);
-  session.task = task;
-  session.running = true;
-
-  task
-    .run()
-    .then((result) => {
-      session.running = false;
-      if (result.outputPath) {
-        session.output = { path: result.outputPath, name: `${taskName}.ts` };
-      }
-      if (result.failed.length > 0) {
-        broadcast({ type: 'log', message: `有 ${result.failed.length} 个分片失败，未拼接` });
-      }
-    })
-    .catch((err: unknown) => {
-      session.running = false;
-      const message = err instanceof Error ? err.message : String(err);
-      broadcast({ type: 'log', message: `任务终止：${message}` });
-      broadcast({ type: 'phase', phase: 'failed' });
-    });
+  };
 }
-
-function defaultOutDir(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const base = parsed.pathname.split('/').filter(Boolean).pop() ?? 'task';
-    return `downloads/${base.replace(/\.m3u8?$/i, '') || 'task'}`;
-  } catch {
-    return 'downloads/task';
-  }
-}
-
-const DOWNLOADS_DIR = resolve(process.cwd(), 'downloads');
 
 async function dirSize(dir: string): Promise<number> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -134,10 +99,8 @@ async function dirSize(dir: string): Promise<number> {
 }
 
 /**
- * 解析要下载的产物：
- *   1. ?task=<任务名> 指定
- *   2. 本次会话刚完成的任务
- *   3. downloads/ 下最新的 output.ts（服务重启后仍可取回旧产物）
+ * 按任务名解析产物：?task=<名> 指定，否则取 downloads/ 下最新的 output.ts。
+ * （队列任务的产物走 ?job=<id>，直接取队列里记录的绝对路径。）
  */
 async function resolveOutput(requested: string | null): Promise<{ path: string; name: string } | null> {
   if (requested && /^[\w.-]+$/.test(requested)) {
@@ -145,10 +108,6 @@ async function resolveOutput(requested: string | null): Promise<{ path: string; 
     if (await stat(candidate).catch(() => null)) {
       return { path: candidate, name: `${requested}.ts` };
     }
-  }
-
-  if (session.output && (await stat(session.output.path).catch(() => null))) {
-    return session.output;
   }
 
   const entries = await readdir(DOWNLOADS_DIR, { withFileTypes: true }).catch(() => []);
@@ -170,6 +129,8 @@ const server = createServer((req, res) => {
     const path = url.pathname;
 
     try {
+      /* ---------- 事件流 ---------- */
+
       if (path === '/api/events') {
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
@@ -183,25 +144,129 @@ const server = createServer((req, res) => {
         return;
       }
 
+      /* ---------- 队列 ---------- */
+
+      if (path === '/api/queue' && req.method === 'GET') {
+        json(res, 200, queue.snapshot());
+        return;
+      }
+
+      if (path === '/api/queue' && req.method === 'POST') {
+        const body = await readJson(req);
+        const urls = urlsFrom(body);
+        if (urls.length === 0) {
+          json(res, 400, { error: '缺少播放列表地址' });
+          return;
+        }
+        const result = queue.add(urls, paramsFrom(body));
+        json(res, 200, { ...result, queue: queue.snapshot() });
+        return;
+      }
+
+      if (path === '/api/queue' && req.method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? '';
+        const result = queue.remove(id);
+        json(res, result.ok ? 200 : 409, result.ok ? { ok: true, queue: queue.snapshot() } : { error: result.reason });
+        return;
+      }
+
+      if (path === '/api/queue/start' && req.method === 'POST') {
+        void queue.start().catch((err: unknown) => {
+          broadcast({ type: 'log', message: `队列异常：${err instanceof Error ? err.message : String(err)}` });
+        });
+        json(res, 202, { ok: true });
+        return;
+      }
+
+      if (path === '/api/queue/stop' && req.method === 'POST') {
+        queue.stop();
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      if (path === '/api/queue/clear' && req.method === 'POST') {
+        const removed = queue.clearFinished();
+        json(res, 200, { ok: true, removed });
+        return;
+      }
+
+      if (path === '/api/queue/retry' && req.method === 'POST') {
+        const body = await readJson(req);
+        const id = String(body.id ?? '');
+        const ok = queue.retry(id);
+        json(res, ok ? 200 : 409, ok ? { ok: true } : { error: '无法重试（不存在或正在运行）' });
+        return;
+      }
+
+      if (path === '/api/queue/retry-all' && req.method === 'POST') {
+        const retried = queue.retryAll();
+        json(res, 200, { ok: true, retried });
+        return;
+      }
+
+      /* ---------- 任务控制 ---------- */
+
+      if (path === '/api/control' && req.method === 'POST') {
+        const body = await readJson(req);
+        const action = String(body.action ?? '');
+        if (action === 'pause') queue.pause();
+        else if (action === 'resume') queue.resume();
+        else if (action === 'cancel') queue.stop();
+        else {
+          json(res, 400, { error: `未知动作 ${action}` });
+          return;
+        }
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      // 兼容旧接口：入队并立即开始
+      if (path === '/api/start' && req.method === 'POST') {
+        const body = await readJson(req);
+        const urls = urlsFrom(body);
+        if (urls.length === 0) {
+          json(res, 400, { error: '缺少播放列表地址' });
+          return;
+        }
+        queue.add(urls, paramsFrom(body));
+        void queue.start().catch(() => {});
+        json(res, 202, { ok: true });
+        return;
+      }
+
+      /* ---------- 下载与清理 ---------- */
+
       if (path === '/api/download' && req.method === 'GET') {
-        const out = await resolveOutput(url.searchParams.get('task'));
-        if (!out) {
+        const jobId = url.searchParams.get('job');
+        let target: { path: string; name: string } | null = null;
+
+        if (jobId) {
+          const outPath = queue.outputPathOf(jobId);
+          const name = queue.taskNameOf(jobId) ?? 'output';
+          if (outPath && (await stat(outPath).catch(() => null))) {
+            target = { path: outPath, name: `${name}.ts` };
+          }
+        }
+        if (!target) target = await resolveOutput(url.searchParams.get('task'));
+
+        if (!target) {
           json(res, 404, { error: '没有可下载的文件' });
           return;
         }
-        const info = await stat(out.path).catch(() => null);
+        const info = await stat(target.path).catch(() => null);
         if (!info) {
           json(res, 404, { error: '文件已不存在' });
           return;
         }
+
         res.writeHead(200, {
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(info.size),
-          'Content-Disposition': `attachment; filename="${out.name}"`,
+          'Content-Disposition': `attachment; filename="${target.name}"`,
         });
 
         // 客户端中断时必须销毁读流，否则文件句柄会一直占着，导致文件无法删除
-        const fileStream = createReadStream(out.path);
+        const fileStream = createReadStream(target.path);
         fileStream.on('error', () => {
           if (!res.headersSent) res.writeHead(500);
           res.destroy();
@@ -213,17 +278,20 @@ const server = createServer((req, res) => {
 
       if (path === '/api/cleanup' && req.method === 'POST') {
         const body = await readJson(req);
-        const taskName = String(body.task ?? '');
-        if (!/^[\w.-]+$/.test(taskName)) {
-          json(res, 400, { error: '任务名不合法' });
-          return;
+
+        let taskDir: string | null = null;
+        const jobId = String(body.job ?? '');
+        if (jobId) {
+          const dir = queue.outDirOf(jobId);
+          if (dir) taskDir = resolve(dir);
         }
 
-        // 本次会话的产物可能在自定义目录；重启后只能按 downloads/<任务名> 定位
-        let taskDir: string | null = null;
-        if (session.output && basename(dirname(session.output.path)) === taskName) {
-          taskDir = dirname(session.output.path);
-        } else {
+        if (!taskDir) {
+          const taskName = String(body.task ?? '');
+          if (!/^[\w.-]+$/.test(taskName)) {
+            json(res, 400, { error: '任务名不合法' });
+            return;
+          }
           const candidate = resolve(DOWNLOADS_DIR, taskName);
           if (await stat(candidate).catch(() => null)) taskDir = candidate;
         }
@@ -245,43 +313,20 @@ const server = createServer((req, res) => {
         return;
       }
 
+      /* ---------- 状态 ---------- */
+
       if (path === '/api/state') {
         const out = await resolveOutput(null);
         const info = out ? await stat(out.path).catch(() => null) : null;
         json(res, 200, {
-          running: session.running,
-          hasTask: session.task !== null,
+          running: queue.isRunning,
+          paused: queue.isPaused,
+          runningId: queue.runningId,
+          hasTask: queue.size > 0,
+          queueSize: queue.size,
+          maxQueue: MAX_QUEUE,
           output: out && info ? { name: out.name, path: out.path, size: info.size } : null,
         });
-        return;
-      }
-
-      if (path === '/api/start' && req.method === 'POST') {
-        if (session.running) {
-          json(res, 409, { error: '已有任务在运行' });
-          return;
-        }
-        startTask(await readJson(req));
-        json(res, 202, { ok: true });
-        return;
-      }
-
-      if (path === '/api/control' && req.method === 'POST') {
-        const body = await readJson(req);
-        const action = String(body.action ?? '');
-        const task = session.task;
-        if (!task) {
-          json(res, 409, { error: '没有任务' });
-          return;
-        }
-        if (action === 'pause') task.pause();
-        else if (action === 'resume') task.resume();
-        else if (action === 'cancel') task.cancel();
-        else {
-          json(res, 400, { error: `未知动作 ${action}` });
-          return;
-        }
-        json(res, 200, { ok: true });
         return;
       }
 
@@ -300,5 +345,5 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`m3u8 下载器 GUI: http://${HOST}:${PORT}`);
+  console.log(`m3u8 下载器 GUI: http://${HOST}:${PORT}  (队列上限 ${MAX_QUEUE})`);
 });

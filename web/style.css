@@ -486,6 +486,11 @@ a.primary:hover {
   color: var(--dim);
 }
 
+.log .j {
+  flex: 0 0 30px;
+  color: #3f4757;
+}
+
 .log .msg {
   flex: 1;
   color: var(--muted);
@@ -518,6 +523,284 @@ a.primary:hover {
 
 .log .banner .dim {
   color: var(--dim);
+}
+
+/* ---------------- 队列 ---------------- */
+
+textarea {
+  width: 100%;
+  background: #0e1116;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 9px 11px;
+  font: 12px/1.7 "Cascadia Mono", Consolas, ui-monospace, monospace;
+  outline: none;
+  resize: vertical;
+  min-height: 66px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.14);
+}
+
+textarea:disabled {
+  opacity: 0.5;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: #21262d;
+  color: var(--text);
+}
+
+.queue-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.queue-title {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.queue-count,
+.queue-summary {
+  font-variant-numeric: tabular-nums;
+}
+
+.grow {
+  flex: 1;
+}
+
+.queue-list {
+  max-height: 330px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #333a47 transparent;
+}
+
+.queue-empty {
+  padding: 26px 16px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid #1e222b;
+  font-size: 12px;
+}
+
+.queue-row:last-child {
+  border-bottom: none;
+}
+
+.queue-row:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.queue-row.running {
+  background: rgba(79, 140, 255, 0.06);
+}
+
+.q-idx {
+  flex: 0 0 26px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.q-status {
+  flex: 0 0 16px;
+  text-align: center;
+}
+
+.q-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.q-meta {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.q-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.q-actions button,
+.q-actions a {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: #1d222b;
+  color: var(--muted);
+  text-decoration: none;
+  cursor: pointer;
+  line-height: 1.6;
+}
+
+.q-actions button:hover,
+.q-actions a:hover {
+  background: #252b36;
+  color: var(--text);
+}
+
+.queue-row.done .q-status {
+  color: var(--ok);
+}
+
+.queue-row.failed .q-status {
+  color: var(--err);
+}
+
+.queue-row.running .q-status {
+  color: var(--accent);
+}
+
+.queue-row.cancelled .q-status {
+  color: var(--warn);
+}
+
+/* ---------------- 结果面板 ---------------- */
+
+.results {
+  padding: 0;
+  overflow: hidden;
+  border-color: #2a3342;
+}
+
+.results-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.results-title {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.results-summary {
+  font-variant-numeric: tabular-nums;
+}
+
+button.small {
+  padding: 4px 10px;
+  font-size: 11.5px;
+}
+
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #1e222b;
+  font-size: 12px;
+}
+
+.result-row:last-child {
+  border-bottom: none;
+}
+
+.result-row .r-icon {
+  flex: 0 0 16px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.result-row.ok .r-icon {
+  color: var(--ok);
+}
+
+.result-row.bad .r-icon {
+  color: var(--err);
+}
+
+.result-row.warn .r-icon {
+  color: var(--warn);
+}
+
+.result-row .r-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.result-row .r-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.result-row .r-note {
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-row .r-missing {
+  color: var(--err);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.result-row .r-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.result-row .r-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 
 /* ---------------- 页脚 ---------------- */
