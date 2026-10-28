@@ -1,3 +1,6 @@
+import { resolve } from 'node:path';
+import { FetchHttpClient } from './http.ts';
+import { parsePlaylist } from './playlist.ts';
 import { DownloadTask } from './task.ts';
 import type {
   QueueItemSnapshot,
@@ -33,6 +36,8 @@ interface QueueItem {
   bytes: number;
   elapsedMs: number;
   outputPath: string | null;
+  /** 播放列表总时长（秒），入队后异步探测 */
+  durationSec: number | null;
   error?: string;
 }
 
@@ -105,6 +110,11 @@ export class DownloadQueue {
     return this.items.find((i) => i.id === id)?.outputPath ?? null;
   }
 
+  /** 队列中所有任务的输出目录（绝对路径），供文件扫描使用。 */
+  outDirs(): string[] {
+    return this.items.map((i) => resolve(i.outDir));
+  }
+
   add(urls: string[], params: QueueParams): { added: number; duplicates: number; overflow: number } {
     let added = 0;
     let duplicates = 0;
@@ -141,12 +151,27 @@ export class DownloadQueue {
         bytes: 0,
         elapsedMs: 0,
         outputPath: null,
+        durationSec: null,
       });
       added += 1;
+      void this.probe(this.items[this.items.length - 1]);
     }
 
     this.publish();
     return { added, duplicates, overflow };
+  }
+
+  /** 入队后探测播放列表总时长，用于队列总耗时估算；失败不影响下载。 */
+  private async probe(item: QueueItem): Promise<void> {
+    try {
+      const client = new FetchHttpClient({}, 15_000);
+      const text = (await client.get(item.url)).toString('utf8');
+      const playlist = parsePlaylist(text, item.url);
+      item.durationSec = playlist.totalDuration;
+      this.publish();
+    } catch {
+      /* 探测失败就保持未知，不阻塞队列 */
+    }
   }
 
   remove(id: string): { ok: boolean; reason?: string } {
@@ -299,6 +324,11 @@ function toSnapshot(item: QueueItem): QueueItemSnapshot {
     bytes: item.bytes,
     elapsedMs: item.elapsedMs,
     outputPath: item.outputPath,
+    durationSec: item.durationSec,
+    estimateMs:
+      item.durationSec !== null
+        ? (item.durationSec * 1000) / Math.max(0.1, item.params.speed)
+        : null,
     error: item.error,
     addedAt: item.addedAt,
     startedAt: item.startedAt,

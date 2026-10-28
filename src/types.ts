@@ -109,10 +109,28 @@ export interface QueueItemSnapshot {
   bytes: number;
   elapsedMs: number;
   outputPath: string | null;
+  /** 探测到的播放列表总时长（秒），未知为 null */
+  durationSec: number | null;
+  /** 按该任务倍速估算的耗时（毫秒），未知为 null */
+  estimateMs: number | null;
   error?: string;
   addedAt: number;
   startedAt?: number;
   finishedAt?: number;
+}
+
+/** 磁盘上一个任务留下的文件 */
+export interface TaskFileInfo {
+  id: string;
+  name: string;
+  path: string;
+  segments: number;
+  segmentBytes: number;
+  outputBytes: number;
+  totalBytes: number;
+  startedAt: number | null;
+  durationMs: number | null;
+  hasOutput: boolean;
 }
 
 export interface QueueSummaryEntry extends QueueItemSnapshot {

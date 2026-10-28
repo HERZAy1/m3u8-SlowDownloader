@@ -10,6 +10,9 @@ export interface TaskStateFile {
   speed: number;
   total: number;
   failed: number[];
+  /** 扣除暂停后的实际耗时（毫秒），供文件管理页显示 */
+  elapsedMs?: number;
+  finishedAt?: string;
 }
 
 /**

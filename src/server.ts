@@ -2,10 +2,11 @@ import { createReadStream } from 'node:fs';
 import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { basename, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scanTaskDir } from './files.ts';
 import { DownloadQueue } from './queue.ts';
-import type { ServerEvent } from './types.ts';
+import type { ServerEvent, TaskFileInfo } from './types.ts';
 
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const PORT = Number(process.env.PORT ?? 7788);
@@ -127,8 +128,31 @@ async function resolveOutput(requested: string | null): Promise<{ path: string; 
   return newest ? { path: newest.path, name: newest.name } : null;
 }
 
-const server = createServer((req, res) => {
-  void (async (): Promise<void> => {
+/**
+ * 扫描磁盘上所有任务目录：downloads/ 下的子目录 + 队列里用了自定义目录的任务。
+ * 只有真正存在分片或成品的目录才返回。
+ */
+async function listTaskFiles(): Promise<TaskFileInfo[]> {
+  const seen = new Map<string, TaskFileInfo>();
+
+  const entries = await readdir(DOWNLOADS_DIR, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = join(DOWNLOADS_DIR, entry.name);
+    const info = await scanTaskDir(full, entry.name);
+    if (info) seen.set(info.path, info);
+  }
+
+  for (const dir of queue.outDirs()) {
+    if (seen.has(dir)) continue;
+    const info = await scanTaskDir(dir, basename(dir));
+    if (info) seen.set(info.path, info);
+  }
+
+  return [...seen.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+}
+
+const server = createServer((req, res) => {  void (async (): Promise<void> => {
     const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
     const path = url.pathname;
 
@@ -314,6 +338,34 @@ const server = createServer((req, res) => {
         const before = await dirSize(segmentsDir);
         await rm(segmentsDir, { recursive: true, force: true });
         json(res, 200, { ok: true, freedBytes: before, dir: taskDir });
+        return;
+      }
+
+      /* ---------- 文件管理 ---------- */
+
+      if (path === '/api/files' && req.method === 'GET') {
+        json(res, 200, { tasks: await listTaskFiles() });
+        return;
+      }
+
+      if (path === '/api/files' && req.method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? '';
+        const tasks = await listTaskFiles();
+        const target = tasks.find((t) => t.id === id);
+        if (!target) {
+          json(res, 404, { error: '找不到该任务的文件' });
+          return;
+        }
+        // 兜底校验：只允许删除扫描出来的那两个来源目录
+        const fromDownloads = target.path === resolve(DOWNLOADS_DIR, id);
+        const fromQueue = queue.outDirs().includes(target.path);
+        if (!fromDownloads && !fromQueue) {
+          json(res, 403, { error: '路径不允许删除' });
+          return;
+        }
+        const freedBytes = target.totalBytes;
+        await rm(target.path, { recursive: true, force: true });
+        json(res, 200, { ok: true, freedBytes });
         return;
       }
 

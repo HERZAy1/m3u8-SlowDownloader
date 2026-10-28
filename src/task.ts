@@ -195,6 +195,8 @@ export class DownloadTask {
       }
     }
 
+    const elapsedMs = Date.now() - startedAt - this.control.totalPausedMs;
+
     await store.writeState({
       version: 1,
       url: this.options.url,
@@ -203,9 +205,10 @@ export class DownloadTask {
       speed,
       total,
       failed: result.failed,
+      elapsedMs,
+      finishedAt: new Date().toISOString(),
     });
 
-    const elapsedMs = Date.now() - startedAt - this.control.totalPausedMs;
     this.emit({
       type: 'done',
       failed: result.failed,

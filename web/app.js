@@ -26,6 +26,10 @@ let total = 0;
 let maxQueue = 20;
 /** 记录每片最近一次失败原因，供最终失败行使用 */
 const lastError = new Map();
+/** 磁盘上的任务文件 */
+let files = [];
+/** 当前任务的实时进度，用于计算队列整体百分比 */
+let liveProgress = null;
 
 /* ---------------- 格式化 ---------------- */
 
@@ -49,8 +53,7 @@ function fmtSize(bytes) {
 }
 
 /** [747,748,749,800] -> "747-749, 800" */
-function fmtRanges(nums) {
-  if (!nums || nums.length === 0) return '';
+function fmtRanges(nums) {  if (!nums || nums.length === 0) return '';
   const sorted = [...nums].sort((a, b) => a - b);
   const parts = [];
   let start = sorted[0];
@@ -66,6 +69,121 @@ function fmtRanges(nums) {
     prev = n;
   }
   return parts.join(', ');
+}
+
+function fmtDate(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/* ---------------- 队列总耗时 ---------------- */
+
+function queueStats() {
+  let totalMs = 0;
+  let doneMs = 0;
+
+  for (const item of queue) {
+    const est = item.estimateMs ?? 0;
+    totalMs += est;
+    if (item.status === 'done') {
+      doneMs += est;
+    } else if (item.status === 'running') {
+      const live = liveProgress && runningId === item.id ? liveProgress : null;
+      const frac = live && live.total > 0 ? live.completed / live.total : 0;
+      doneMs += est * frac;
+    }
+  }
+
+  return { totalMs, doneMs, percent: totalMs > 0 ? (doneMs / totalMs) * 100 : 0 };
+}
+
+function updateQueueStats() {
+  const stats = queueStats();
+  if (stats.totalMs <= 0) {
+    $('queuetotal').textContent = '';
+    return;
+  }
+  $('queuetotal').textContent = `总计 ${fmtDuration(stats.totalMs)} · 完成 ${stats.percent.toFixed(0)}%`;
+}
+
+/* ---------------- 文件管理 ---------------- */
+
+function fileRow(file) {
+  const el = document.createElement('div');
+  el.className = 'file-row';
+
+  const name = document.createElement('span');
+  name.className = 'f-name';
+  name.textContent = file.name;
+  name.title = file.path;
+
+  const parts = document.createElement('span');
+  parts.className = 'f-parts';
+  parts.textContent =
+    `分片 ${file.segments} 个 · ${fmtSize(file.segmentBytes)}` +
+    (file.hasOutput ? `　成品 ${fmtSize(file.outputBytes)}` : '　无成品');
+
+  const time = document.createElement('span');
+  time.className = 'f-time';
+  time.textContent = `${fmtDate(file.startedAt)} 起 · 用时 ${fmtDuration(file.durationMs ?? 0)}`;
+
+  const del = document.createElement('button');
+  del.className = 'danger';
+  del.textContent = '删除全部';
+  del.addEventListener('click', () => deleteTaskFiles(file));
+
+  el.append(name, parts, time, del);
+  return el;
+}
+
+function renderFiles() {
+  const list = $('filelist');
+  list.innerHTML = '';
+
+  if (files.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'files-empty';
+    empty.textContent = '暂无文件';
+    list.appendChild(empty);
+    $('filessummary').textContent = '';
+    return;
+  }
+
+  const totalBytes = files.reduce((sum, f) => sum + f.totalBytes, 0);
+  $('filessummary').textContent = `${files.length} 个任务 · ${fmtSize(totalBytes)}`;
+  for (const file of files) list.appendChild(fileRow(file));
+}
+
+async function loadFiles() {
+  try {
+    const res = await fetch('/api/files');
+    if (!res.ok) return;
+    const data = await res.json();
+    files = Array.isArray(data.tasks) ? data.tasks : [];
+    renderFiles();
+  } catch {
+    /* 网络抖动忽略，下次轮询再试 */
+  }
+}
+
+async function deleteTaskFiles(file) {
+  const ok = confirm(
+    `删除 ${file.name} 的全部文件？\n\n` +
+      `分片：${file.segments} 个（${fmtSize(file.segmentBytes)}）\n` +
+      `成品：${file.hasOutput ? fmtSize(file.outputBytes) : '无'}\n` +
+      `合计：${fmtSize(file.totalBytes)}\n\n删除后不可恢复。`,
+  );
+  if (!ok) return;
+
+  const res = await fetch(`/api/files?id=${encodeURIComponent(file.id)}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    banner('已删除任务文件', file.name, `释放 ${fmtSize(data.freedBytes)}`);
+    await loadFiles();
+  } else {
+    note(`删除失败：${data.error || res.status}`);
+  }
 }
 
 /* ---------------- 终端输出 ---------------- */
@@ -154,6 +272,7 @@ function setState(text, cls) {
 }
 
 function renderProgress(snap) {
+  liveProgress = snap;
   const pct = snap.total > 0 ? (snap.completed / snap.total) * 100 : 0;
   fillEl.style.width = `${pct.toFixed(1)}%`;
   $('pct').textContent = `${pct.toFixed(1)}%`;
@@ -165,6 +284,7 @@ function renderProgress(snap) {
 
   const live = listEl.querySelector('.queue-row.running .q-meta');
   if (live) live.textContent = `${snap.completed}/${snap.total}`;
+  updateQueueStats();
 }
 
 /* ---------------- 队列渲染 ---------------- */
@@ -362,6 +482,7 @@ function applyQueue(snap) {
   renderQueue();
   renderResults();
   updateButtons();
+  updateQueueStats();
 }
 
 /* ---------------- 汇总报告 ---------------- */
@@ -684,6 +805,7 @@ events.onmessage = (message) => {
       } else {
         banner('任务完成', fmtDuration(event.elapsedMs));
       }
+      void loadFiles();
       break;
 
     case 'phase':
@@ -733,3 +855,7 @@ fetch('/api/queue')
   .then((r) => r.json())
   .then((snap) => applyQueue(snap))
   .catch(() => {});
+
+$('refreshfiles').addEventListener('click', loadFiles);
+void loadFiles();
+setInterval(loadFiles, 5000);

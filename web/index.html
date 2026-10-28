@@ -79,6 +79,7 @@
         <div class="queue-head">
           <span class="queue-title">队列</span>
           <span id="queuecount" class="queue-count">0 / 20</span>
+          <span id="queuetotal" class="queue-total"></span>
           <span class="grow"></span>
           <span id="queuesummary" class="queue-summary"></span>
         </div>
@@ -96,6 +97,18 @@
           <button id="clearresults" class="small">清空结果</button>
         </div>
         <div id="resultlist" class="results-list"></div>
+      </section>
+
+      <section class="card files-card">
+        <div class="files-head">
+          <span class="files-title">文件</span>
+          <span id="filessummary" class="files-summary"></span>
+          <span class="grow"></span>
+          <button id="refreshfiles" class="small">刷新</button>
+        </div>
+        <div id="filelist" class="files-list">
+          <div class="files-empty">正在扫描…</div>
+        </div>
       </section>
 
       <section class="card term">
