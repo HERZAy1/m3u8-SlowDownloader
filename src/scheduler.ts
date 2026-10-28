@@ -22,6 +22,8 @@ export interface SchedulerOptions {
   retries: number;
   /** 已下载分片是否仍消耗时间轴（resume=pace 时为 true）。 */
   paceExisting: boolean;
+  /** 等待期间的心跳回调，约每秒一次，让界面上的计时继续走动。 */
+  onTick?: () => void;
 }
 
 export interface SchedulerHooks {
@@ -64,6 +66,7 @@ export async function runSchedule(
   let bytes = 0;
 
   /** 等待到本片的计划时刻。返回最终采用的计划时刻。 */
+  let lastTick = 0;
   const waitUntil = async (intervalMs: number): Promise<number> => {
     const jitter = options.jitterMs > 0 ? (Math.random() * 2 - 1) * options.jitterMs : 0;
     for (;;) {
@@ -76,6 +79,10 @@ export async function runSchedule(
       const plannedAt = t0 + control.totalPausedMs + intervalMs + jitter;
       const remain = plannedAt - Date.now();
       if (remain <= 0) return plannedAt;
+      if (Date.now() - lastTick >= 1000) {
+        lastTick = Date.now();
+        options.onTick?.();
+      }
       await sleep(Math.min(remain, 200));
     }
   };
@@ -102,9 +109,12 @@ export async function runSchedule(
 
     if (await hooks.isDone(segment.index)) {
       if (options.paceExisting) {
+        // pace：完整重放时间轴，已下载的分片也占住它原本的时段
         await waitUntil(intervalMs);
+        cumulative += segment.duration;
       }
-      cumulative += segment.duration;
+      // fast：跳过，且**不推进时间轴**。否则续传时第一个缺失分片会被排到
+      // 它在原视频中的位置（可能是几十分钟之后），表现为"卡住不动"。
       continue;
     }
 

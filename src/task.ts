@@ -150,7 +150,7 @@ export class DownloadTask {
       segments,
       client,
       this.control,
-      { speed, jitterMs, retries, paceExisting: resumeMode === 'pace' },
+      { speed, jitterMs, retries, paceExisting: resumeMode === 'pace', onTick: emitProgress },
       {
         isDone: (index) => store.has(index),
         save: (index, data) => store.write(index, data),
