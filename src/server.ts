@@ -60,7 +60,11 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> 
   }
   try {
     const data = await readFile(resolved);
-    res.writeHead(200, { 'Content-Type': MIME[extname(resolved)] ?? 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(resolved)] ?? 'application/octet-stream',
+      // 前端更新后浏览器必须重新校验，否则会拿着旧 app.js 报"改了没生效"
+      'Cache-Control': 'no-cache',
+    });
     res.end(data);
   } catch {
     res.writeHead(404).end('not found');
