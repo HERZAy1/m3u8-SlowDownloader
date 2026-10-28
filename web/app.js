@@ -228,7 +228,7 @@ function queueRow(item, index) {
     actions.appendChild(clean);
   }
 
-  if (item.status === 'pending') {
+  if (item.status !== 'running') {
     const remove = document.createElement('button');
     remove.textContent = '移除';
     remove.addEventListener('click', () => removeItem(item.id));
@@ -312,6 +312,12 @@ function resultRow(item) {
     link.setAttribute('download', '');
     actions.appendChild(link);
   }
+
+  const remove = document.createElement('button');
+  remove.textContent = '移除';
+  remove.title = '从列表中移除（不影响已下载的文件）';
+  remove.addEventListener('click', () => removeItem(item.id));
+  actions.appendChild(remove);
 
   el.append(icon, body, meta, actions);
   return el;
@@ -582,11 +588,14 @@ $('retryall').addEventListener('click', async () => {
   }
 });
 
-$('clear').addEventListener('click', async () => {
+async function clearFinished() {
   const res = await fetch('/api/queue/clear', { method: 'POST' });
   const data = await res.json().catch(() => ({}));
   if (data.removed) note(`已清除 ${data.removed} 条已完成记录`);
-});
+}
+
+$('clear').addEventListener('click', clearFinished);
+$('clearresults').addEventListener('click', clearFinished);
 
 $('speedchips').addEventListener('click', (event) => {
   const chip = event.target.closest('button[data-speed]');
