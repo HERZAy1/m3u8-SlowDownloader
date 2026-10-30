@@ -54,16 +54,22 @@
           </label>
         </div>
 
-        <label class="field wide">
-          <span class="label">输出目录</span>
-          <input
-            id="out"
-            type="text"
-            placeholder="留空 = downloads/&lt;任务名&gt;"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </label>
+        <div class="grid grid-2">
+          <label class="field">
+            <span class="label">备注（留空则用原文件名）</span>
+            <input id="note" type="text" placeholder="例：第 3 讲 网络协议" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="label">输出目录（有备注时以备注为准）</span>
+            <input
+              id="out"
+              type="text"
+              placeholder="留空 = downloads/&lt;任务名&gt;"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+        </div>
 
         <div class="actions">
           <button id="enqueue">加入队列</button>

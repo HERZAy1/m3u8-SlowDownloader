@@ -89,6 +89,7 @@ function paramsFrom(body: Record<string, unknown>) {
       typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : undefined,
     remux: Boolean(body.remux),
     merge: body.merge !== false,
+    note: typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined,
   };
 }
 
@@ -186,7 +187,7 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
           json(res, 400, { error: '缺少播放列表地址' });
           return;
         }
-        const result = queue.add(urls, paramsFrom(body));
+        const result = await queue.add(urls, paramsFrom(body));
         json(res, 200, { ...result, queue: queue.snapshot() });
         return;
       }
@@ -215,6 +216,15 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
       if (path === '/api/queue/clear' && req.method === 'POST') {
         const removed = queue.clearFinished();
         json(res, 200, { ok: true, removed });
+        return;
+      }
+
+      if (path === '/api/queue/note' && req.method === 'POST') {
+        const body = await readJson(req);
+        const id = String(body.id ?? '');
+        const note = String(body.note ?? '');
+        const result = await queue.setNote(id, note);
+        json(res, result.ok ? 200 : 409, result);
         return;
       }
 
@@ -256,7 +266,7 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
           json(res, 400, { error: '缺少播放列表地址' });
           return;
         }
-        queue.add(urls, paramsFrom(body));
+        await queue.add(urls, paramsFrom(body));
         void queue.start().catch(() => {});
         json(res, 202, { ok: true });
         return;

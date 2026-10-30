@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { rename, stat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { FetchHttpClient } from './http.ts';
 import { parsePlaylist } from './playlist.ts';
 import { DownloadTask } from './task.ts';
@@ -18,6 +19,20 @@ export interface QueueParams {
   outDir?: string;
   remux: boolean;
   merge: boolean;
+  /** 用户备注：填了就用它当目录名与显示名 */
+  note?: string;
+}
+
+/** 把备注清洗成安全的目录名 */
+export function sanitizeNote(input: string): string {
+  const cleaned = input
+    .trim()
+    .replace(/[\\/:*?"<>|\r\n\t]/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 60)
+    .trim();
+  if (cleaned === '.' || cleaned === '..') return '';
+  return cleaned;
 }
 
 interface QueueItem {
@@ -27,6 +42,10 @@ interface QueueItem {
   status: QueueStatus;
   taskName: string;
   outDir: string;
+  /** 当前生效的备注名 */
+  note?: string;
+  /** 运行中改了备注时暂存，等任务结束后再改目录 */
+  pendingNote?: string;
   addedAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -115,14 +134,19 @@ export class DownloadQueue {
     return this.items.map((i) => resolve(i.outDir));
   }
 
-  add(urls: string[], params: QueueParams): { added: number; duplicates: number; overflow: number } {
+  async add(
+    urls: string[],
+    params: QueueParams,
+  ): Promise<{ added: number; duplicates: number; overflow: number }> {
     let added = 0;
     let duplicates = 0;
     let overflow = 0;
 
-    for (const raw of urls) {
-      const url = raw.trim();
-      if (!url) continue;
+    const baseNote = params.note ? sanitizeNote(params.note) : '';
+    const targets = urls.map((u) => u.trim()).filter(Boolean);
+    let batchIndex = 0;
+
+    for (const url of targets) {
       if (this.items.length >= this.maxItems) {
         overflow += 1;
         continue;
@@ -135,8 +159,20 @@ export class DownloadQueue {
         continue;
       }
 
+      batchIndex += 1;
       this.seq += 1;
-      const outDir = params.outDir && params.outDir.trim() ? params.outDir.trim() : defaultOutDir(url);
+
+      let note: string | undefined;
+      let outDir: string;
+
+      if (baseNote) {
+        const wanted = targets.length > 1 ? `${baseNote}-${batchIndex}` : baseNote;
+        note = await this.uniqueName(wanted);
+        outDir = `downloads/${note}`;
+      } else {
+        outDir = params.outDir && params.outDir.trim() ? params.outDir.trim() : defaultOutDir(url);
+      }
+
       this.items.push({
         id: `q${this.seq}`,
         url,
@@ -144,6 +180,7 @@ export class DownloadQueue {
         status: 'pending',
         taskName: outDir.split(/[\\/]/).pop() || 'task',
         outDir,
+        note,
         addedAt: Date.now(),
         total: 0,
         downloaded: 0,
@@ -159,6 +196,86 @@ export class DownloadQueue {
 
     this.publish();
     return { added, duplicates, overflow };
+  }
+
+  /** 找一个既不在磁盘上、也没被队列占用的目录名 */
+  private async uniqueName(base: string): Promise<string> {
+    let candidate = base;
+    let n = 1;
+    for (;;) {
+      const dir = `downloads/${candidate}`;
+      const onDisk = await stat(resolve(dir)).catch(() => null);
+      const inQueue = this.items.some((i) => i.outDir === dir);
+      if (!onDisk && !inQueue) return candidate;
+      n += 1;
+      candidate = `${base}-${n}`;
+    }
+  }
+
+  /**
+   * 修改备注名。
+   * - 待处理：直接改目录（磁盘上还没有文件）
+   * - 运行中：只改显示名，目录等任务结束再改（运行中改目录会让写入路径失效）
+   * - 已完成/失败：立即重命名目录
+   */
+  async setNote(
+    id: string,
+    rawNote: string,
+  ): Promise<{ ok: boolean; error?: string; note?: string }> {
+    const item = this.items.find((i) => i.id === id);
+    if (!item) return { ok: false, error: '没有这个任务' };
+
+    const clean = sanitizeNote(rawNote);
+    if (!clean) return { ok: false, error: '备注不能为空或包含非法字符' };
+    if (clean === item.note) return { ok: true, note: clean };
+
+    if (item.status === 'pending') {
+      const unique = await this.uniqueName(clean);
+      item.note = unique;
+      item.taskName = unique;
+      item.outDir = `downloads/${unique}`;
+      this.publish();
+      return { ok: true, note: unique };
+    }
+
+    if (item.status === 'running') {
+      item.pendingNote = clean;
+      item.note = clean;
+      this.publish();
+      return { ok: true, note: clean };
+    }
+
+    const result = await this.renameTaskDir(item, clean);
+    this.publish();
+    return result;
+  }
+
+  /** 把任务目录改名为 downloads/<name>，并同步 outDir / taskName / outputPath */
+  private async renameTaskDir(
+    item: QueueItem,
+    name: string,
+  ): Promise<{ ok: boolean; error?: string; note?: string }> {
+    const unique = await this.uniqueName(name);
+    const oldDir = resolve(item.outDir);
+    const newDir = resolve(`downloads/${unique}`);
+
+    if (oldDir !== newDir) {
+      try {
+        await rename(oldDir, newDir);
+      } catch {
+        return { ok: false, error: '重命名失败：目录可能不存在或被占用' };
+      }
+    }
+
+    item.note = unique;
+    item.taskName = unique;
+    item.outDir = `downloads/${unique}`;
+
+    if (item.outputPath) {
+      const fileName = item.outputPath.split(/[\\/]/).pop() || 'output.ts';
+      item.outputPath = join(newDir, fileName);
+    }
+    return { ok: true, note: unique };
   }
 
   /** 入队后探测播放列表总时长，用于队列总耗时估算；失败不影响下载。 */
@@ -301,6 +418,14 @@ export class DownloadQueue {
     }
 
     item.finishedAt = Date.now();
+
+    // 运行中改过备注的话，等任务结束再把目录改名（运行中改会让写入路径失效）
+    if (item.pendingNote) {
+      const target = item.pendingNote;
+      item.pendingNote = undefined;
+      await this.renameTaskDir(item, target);
+    }
+
     this.current = null;
     this.currentId = null;
     this.publish();
@@ -318,6 +443,7 @@ function toSnapshot(item: QueueItem): QueueItemSnapshot {
     url: item.url,
     status: item.status,
     taskName: item.taskName,
+    note: item.note,
     total: item.total,
     downloaded: item.downloaded,
     failed: item.failed,

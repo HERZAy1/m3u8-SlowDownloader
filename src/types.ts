@@ -103,6 +103,8 @@ export interface QueueItemSnapshot {
   status: QueueStatus;
   /** 输出目录名，用于下载 / 清理时定位 */
   taskName: string;
+  /** 用户备注名；有值时队列显示名与目录名都用它 */
+  note?: string;
   total: number;
   downloaded: number;
   failed: number[];

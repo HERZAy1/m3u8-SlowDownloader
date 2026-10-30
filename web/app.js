@@ -312,8 +312,8 @@ function queueRow(item, index) {
 
   const url = document.createElement('span');
   url.className = 'q-url';
-  url.textContent = item.url;
-  url.title = item.url;
+  url.textContent = item.note ?? item.url;
+  url.title = item.note ? `${item.note}\n${item.url}` : item.url;
 
   const meta = document.createElement('span');
   meta.className = 'q-meta';
@@ -321,6 +321,12 @@ function queueRow(item, index) {
 
   const actions = document.createElement('span');
   actions.className = 'q-actions';
+
+  const noteBtn = document.createElement('button');
+  noteBtn.textContent = '备注';
+  noteBtn.title = '给这个任务起个名字（会用作目录名和下载文件名）';
+  noteBtn.addEventListener('click', () => editNote(item));
+  actions.appendChild(noteBtn);
 
   if ((item.status === 'done' || item.status === 'failed') && item.outputPath) {
     const link = document.createElement('a');
@@ -373,8 +379,8 @@ function resultRow(item) {
 
   const name = document.createElement('span');
   name.className = 'r-name';
-  name.textContent = item.url;
-  name.title = item.url;
+  name.textContent = item.note ?? item.url;
+  name.title = item.note ? `${item.note}\n${item.url}` : item.url;
   body.appendChild(name);
 
   if (complete) {
@@ -601,6 +607,8 @@ async function enqueue(startNow) {
   };
   const out = $('out').value.trim();
   if (out) body.outDir = out;
+  const label = $('note').value.trim();
+  if (label) body.note = label;
   const limit = $('limit').value.trim();
   if (limit) body.limit = Number(limit);
 
@@ -618,8 +626,9 @@ async function enqueue(startNow) {
 
   saveSettings();
   if (data.added > 0) {
-    banner('已加入队列', `${data.added} 个`, `${body.speed}x`);
+    banner('已加入队列', `${data.added} 个`, `${body.speed}x`, label ? `备注 ${label}` : '');
     $('urls').value = '';
+    $('note').value = '';
   }
   if (data.duplicates) note(`跳过重复地址 ${data.duplicates} 个`);
   if (data.overflow) note(`队列已满（上限 ${maxQueue}），忽略 ${data.overflow} 个`);
@@ -641,6 +650,31 @@ async function removeItem(id) {
     const data = await res.json().catch(() => ({}));
     note(`移除失败：${data.error || res.status}`);
   }
+}
+
+/** 给队列里的任务改名（备注名同时作为目录名与下载文件名） */
+async function editNote(item) {
+  const input = prompt('给这个任务起个名字：\n\n会用作目录名和下载的文件名', item.note ?? '');
+  if (input === null) return;
+  const label = input.trim();
+  if (!label) return;
+
+  const res = await fetch('/api/queue/note', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: item.id, note: label }),
+  });
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok || data.ok === false) {
+    note(`改名失败：${data.error || res.status}`);
+    return;
+  }
+
+  const hint =
+    item.status === 'running' ? '任务结束后重命名目录' : item.status === 'pending' ? '目录名已更新' : '目录已重命名';
+  banner('备注已更新', data.note ?? label, hint);
+  void loadFiles();
 }
 
 async function cleanup(item) {
