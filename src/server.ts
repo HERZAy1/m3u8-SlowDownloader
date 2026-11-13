@@ -13,6 +13,11 @@ const PORT = Number(process.env.PORT ?? 7788);
 /** 默认只绑本机；服务器部署时用 HOST=0.0.0.0 开放局域网访问。 */
 const HOST = process.env.HOST ?? '127.0.0.1';
 const DOWNLOADS_DIR = resolve(process.cwd(), 'downloads');
+/** 队列存档目录：断电/崩溃后靠它把任务读回来 */
+const STATE_DIR = process.env.STATE_DIR
+  ? resolve(process.env.STATE_DIR)
+  : resolve(process.cwd(), 'state');
+const QUEUE_FILE = join(STATE_DIR, 'queue.json');
 const MAX_QUEUE = Number(process.env.MAX_QUEUE ?? 20);
 
 const MIME: Record<string, string> = {
@@ -37,7 +42,11 @@ function broadcast(event: ServerEvent): void {
   for (const client of session.clients) client.write(payload);
 }
 
-const queue = new DownloadQueue(broadcast, MAX_QUEUE);
+const queue = new DownloadQueue(broadcast, {
+  downloadsDir: DOWNLOADS_DIR,
+  stateFile: QUEUE_FILE,
+  maxItems: MAX_QUEUE,
+});
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -105,14 +114,26 @@ async function dirSize(dir: string): Promise<number> {
 }
 
 /**
+ * 把用户给的任务名解析成 downloads/ 下的目录，越界一律拒绝。
+ * 不能只允许 ASCII——备注名与目录名可能是中文。
+ */
+function safeTaskDir(name: string): string | null {
+  if (!name) return null;
+  const dir = resolve(DOWNLOADS_DIR, name);
+  if (dir !== DOWNLOADS_DIR && !dir.startsWith(DOWNLOADS_DIR + sep)) return null;
+  return dir;
+}
+
+/**
  * 按任务名解析产物：?task=<名> 指定，否则取 downloads/ 下最新的 output.ts。
  * （队列任务的产物走 ?job=<id>，直接取队列里记录的绝对路径。）
  */
 async function resolveOutput(requested: string | null): Promise<{ path: string; name: string } | null> {
-  if (requested && /^[\w.-]+$/.test(requested)) {
-    const candidate = resolve(DOWNLOADS_DIR, requested, 'output.ts');
+  const dir = requested ? safeTaskDir(requested) : null;
+  if (dir) {
+    const candidate = join(dir, 'output.ts');
     if (await stat(candidate).catch(() => null)) {
-      return { path: candidate, name: `${requested}.ts` };
+      return { path: candidate, name: `${basename(dir)}.ts` };
     }
   }
 
@@ -151,6 +172,20 @@ async function listTaskFiles(): Promise<TaskFileInfo[]> {
   }
 
   return [...seen.values()].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+}
+
+/**
+ * 备注名基本都是中文，而 HTTP 头只能是 latin1——直接塞中文会让 writeHead 抛
+ * ERR_INVALID_CHAR，表现为"点了下载没反应/连接被中断"。
+ * 这里给 ASCII 兜底名 + RFC 5987 的 filename*，浏览器优先用后者。
+ */
+function contentDisposition(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'output.ts';
+  const encoded = encodeURIComponent(name).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 const server = createServer((req, res) => {  void (async (): Promise<void> => {
@@ -231,14 +266,31 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
       if (path === '/api/queue/retry' && req.method === 'POST') {
         const body = await readJson(req);
         const id = String(body.id ?? '');
-        const ok = queue.retry(id);
-        json(res, ok ? 200 : 409, ok ? { ok: true } : { error: '无法重试（不存在或正在运行）' });
+        const result = queue.retry(id);
+        json(res, result.ok ? 200 : 409, result.ok ? { ok: true } : { error: result.error ?? '无法重试' });
         return;
       }
 
       if (path === '/api/queue/retry-all' && req.method === 'POST') {
         const retried = queue.retryAll();
         json(res, 200, { ok: true, retried });
+        return;
+      }
+
+      // 重新扫一遍磁盘，把断电/崩溃前留下的任务目录认领回队列
+      if (path === '/api/queue/recover' && req.method === 'POST') {
+        const result = await queue.recoverFromDisk();
+        json(res, 200, { ok: true, ...result, queue: queue.snapshot() });
+        return;
+      }
+
+      // 给磁盘恢复出来、但没有原始链接的老任务补一个地址
+      if (path === '/api/queue/attach' && req.method === 'POST') {
+        const body = await readJson(req);
+        const id = String(body.id ?? '');
+        const target = String(body.url ?? '');
+        const result = await queue.attachUrl(id, target);
+        json(res, result.ok ? 200 : 409, result.ok ? { ok: true, queue: queue.snapshot() } : result);
         return;
       }
 
@@ -287,6 +339,20 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
         }
         if (!target) target = await resolveOutput(url.searchParams.get('task'));
 
+        // 文件管理页按绝对路径下载（目录名可能重名或被备注改名）
+        const wantPath = url.searchParams.get('path');
+        if (!target && wantPath) {
+          const dir = resolve(wantPath);
+          const allowed =
+            dir.startsWith(DOWNLOADS_DIR + sep) || queue.outDirs().includes(dir);
+          if (allowed) {
+            const candidate = join(dir, 'output.ts');
+            if (await stat(candidate).catch(() => null)) {
+              target = { path: candidate, name: `${basename(dir)}.ts` };
+            }
+          }
+        }
+
         if (!target) {
           json(res, 404, { error: '没有可下载的文件' });
           return;
@@ -300,7 +366,7 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
         res.writeHead(200, {
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(info.size),
-          'Content-Disposition': `attachment; filename="${target.name}"`,
+          'Content-Disposition': contentDisposition(target.name),
         });
 
         // 客户端中断时必须销毁读流，否则文件句柄会一直占着，导致文件无法删除
@@ -326,12 +392,8 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
 
         if (!taskDir) {
           const taskName = String(body.task ?? '');
-          if (!/^[\w.-]+$/.test(taskName)) {
-            json(res, 400, { error: '任务名不合法' });
-            return;
-          }
-          const candidate = resolve(DOWNLOADS_DIR, taskName);
-          if (await stat(candidate).catch(() => null)) taskDir = candidate;
+          const candidate = taskName ? safeTaskDir(taskName) : null;
+          if (candidate && (await stat(candidate).catch(() => null))) taskDir = candidate;
         }
 
         if (!taskDir) {
@@ -360,14 +422,17 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
 
       if (path === '/api/files' && req.method === 'DELETE') {
         const id = url.searchParams.get('id') ?? '';
+        const wantedPath = url.searchParams.get('path');
         const tasks = await listTaskFiles();
-        const target = tasks.find((t) => t.id === id);
+        const target = wantedPath
+          ? tasks.find((t) => t.path === resolve(wantedPath))
+          : tasks.find((t) => t.id === id);
         if (!target) {
           json(res, 404, { error: '找不到该任务的文件' });
           return;
         }
         // 兜底校验：只允许删除扫描出来的那两个来源目录
-        const fromDownloads = target.path === resolve(DOWNLOADS_DIR, id);
+        const fromDownloads = target.path.startsWith(DOWNLOADS_DIR + sep);
         const fromQueue = queue.outDirs().includes(target.path);
         if (!fromDownloads && !fromQueue) {
           json(res, 403, { error: '路径不允许删除' });
@@ -391,6 +456,7 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
           hasTask: queue.size > 0,
           queueSize: queue.size,
           maxQueue: MAX_QUEUE,
+          interrupted: queue.interruptedCount,
           output: out && info ? { name: out.name, path: out.path, size: info.size } : null,
         });
         return;
@@ -409,6 +475,19 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
     }
   })();
 });
+
+// 先把队列存档与磁盘上的任务读回来，再开始对外服务：
+// 否则进程被 kill -9 / 断电重启后，界面会是空的，用户以为任务全丢了。
+const boot = await queue.init().catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`恢复队列失败：${message}`);
+  return { restored: 0, adopted: 0, refreshed: 0 };
+});
+if (boot.restored > 0 || boot.adopted > 0) {
+  console.log(
+    `已恢复队列：存档 ${boot.restored} 项，磁盘认领 ${boot.adopted} 项，刷新 ${boot.refreshed} 项`,
+  );
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`m3u8 下载器 GUI: http://${HOST}:${PORT}  (队列上限 ${MAX_QUEUE})`);

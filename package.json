@@ -1,6 +1,6 @@
 {
   "name": "m3u8-downloader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "EduSoho HLS 点播下载器：按 EXTINF 节奏缓速下载，输出原始 TS",
@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/cli.ts",
     "gui": "node src/server.ts",
-    "dry": "node src/cli.ts --dry-run"
+    "dry": "node src/cli.ts --dry-run",
+    "test:crash": "node tests/crash-recovery.mjs"
   }
 }

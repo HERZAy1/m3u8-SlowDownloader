@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 import { createWriteStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, rename, rm, stat } from 'node:fs/promises';
 import type { SegmentStore } from './store.ts';
 
 export interface MergeOptions {
@@ -14,9 +14,13 @@ export interface MergeOptions {
  * 输出是原始 TS（决策 D5），因此不需要 ffmpeg。
  * 注意：203 个 #EXT-X-DISCONTINUITY 会让 TS 时间戳跳变，多数播放器可容忍；
  * 若出现音画不同步，用 --remux 走 ffmpeg 修复。
+ *
+ * 拼接先写 output.ts.part，全部写完才 rename 成 output.ts。否则断电时
+ * 会留下一个"看起来存在、实际只有前几片"的成品，续传时被当成已完成。
  */
 export async function mergeSegments(store: SegmentStore, total: number, opts: MergeOptions): Promise<number> {
-  const out = createWriteStream(opts.outputPath);
+  const partPath = `${opts.outputPath}.part`;
+  const out = createWriteStream(partPath);
   let bytes = 0;
 
   try {
@@ -33,15 +37,18 @@ export async function mergeSegments(store: SegmentStore, total: number, opts: Me
       bytes += buf.length;
       opts.onProgress?.(i, total);
     }
+
+    await new Promise<void>((resolve, reject) => {
+      out.end(() => resolve());
+      out.once('error', reject);
+    });
+
+    await rename(partPath, opts.outputPath);
   } catch (err) {
     out.destroy();
+    await rm(partPath, { force: true }).catch(() => {});
     throw err;
   }
-
-  await new Promise<void>((resolve, reject) => {
-    out.end(() => resolve());
-    out.once('error', reject);
-  });
 
   return bytes;
 }

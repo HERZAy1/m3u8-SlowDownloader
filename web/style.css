@@ -719,6 +719,18 @@ button.ghost:hover:not(:disabled) {
   color: var(--warn);
 }
 
+.queue-row.interrupted {
+  background: rgba(255, 180, 84, 0.05);
+}
+
+.queue-row.interrupted .q-status {
+  color: var(--warn);
+}
+
+.queue-row.interrupted .q-meta {
+  color: var(--warn);
+}
+
 /* ---------------- 结果面板 ---------------- */
 
 .results {
@@ -923,6 +935,22 @@ button.danger {
 
 button.danger:hover:not(:disabled) {
   background: rgba(248, 81, 73, 0.18);
+}
+
+.f-dl {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: #1d222b;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.f-dl:hover {
+  background: #252b36;
+  color: var(--text);
 }
 
 /* ---------------- 页脚 ---------------- */

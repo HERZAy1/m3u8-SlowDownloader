@@ -4,6 +4,10 @@ m3u8-downloader-task.md
 # 下载产物
 downloads/
 tmp-*/
+tests/.work/
+
+# 队列存档（断电恢复用）
+state/
 
 # 依赖与构建输出
 node_modules/

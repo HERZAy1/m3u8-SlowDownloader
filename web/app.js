@@ -9,13 +9,21 @@ const emptyRow = $('queueempty');
 const MAX_LINES = 4000;
 const SETTINGS_KEY = 'm3u8dl.settings';
 
-const STATUS_ICON = { pending: '○', running: '●', done: '✓', failed: '✗', cancelled: '⊘' };
+const STATUS_ICON = {
+  pending: '○',
+  running: '●',
+  done: '✓',
+  failed: '✗',
+  cancelled: '⊘',
+  interrupted: '⏸',
+};
 const STATUS_TEXT = {
   pending: '待处理',
   running: '下载中',
   done: '完成',
   failed: '有缺失分片',
   cancelled: '已取消',
+  interrupted: '中断（磁盘上有分片，可继续）',
 };
 
 let queue = [];
@@ -30,6 +38,8 @@ const lastError = new Map();
 let files = [];
 /** 当前任务的实时进度，用于计算队列整体百分比 */
 let liveProgress = null;
+/** 中断任务的提示只弹一次，避免每次队列推送都刷 */
+let recoveredAnnounced = false;
 
 /* ---------------- 格式化 ---------------- */
 
@@ -132,6 +142,16 @@ function fileRow(file) {
   del.className = 'danger';
   del.textContent = '删除全部';
   del.addEventListener('click', () => deleteTaskFiles(file));
+
+  if (file.hasOutput) {
+    const dl = document.createElement('a');
+    dl.className = 'f-dl';
+    dl.href = `/api/download?path=${encodeURIComponent(file.path)}`;
+    dl.textContent = '下载成品';
+    dl.setAttribute('download', '');
+    el.append(name, parts, time, dl, del);
+    return el;
+  }
 
   el.append(name, parts, time, del);
   return el;
@@ -293,6 +313,11 @@ function metaText(item) {
   if (item.status === 'pending') return '待处理';
   if (item.status === 'running') return `${item.downloaded}/${item.total || '?'}`;
   if (item.status === 'cancelled') return '已取消';
+  if (item.status === 'interrupted') {
+    const total = item.total || '?';
+    const gap = item.failed.length > 0 ? `缺 ${item.failed.length} 片` : '待续传';
+    return `${item.downloaded}/${total} · ${gap}`;
+  }
   if (item.status === 'failed') return `${item.downloaded}/${item.total} · 缺 ${item.failed.length} 片`;
   return `${item.downloaded}/${item.total} · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}`;
 }
@@ -328,7 +353,7 @@ function queueRow(item, index) {
   noteBtn.addEventListener('click', () => editNote(item));
   actions.appendChild(noteBtn);
 
-  if ((item.status === 'done' || item.status === 'failed') && item.outputPath) {
+  if ((item.status === 'done' || item.status === 'failed' || item.status === 'interrupted') && item.outputPath) {
     const link = document.createElement('a');
     link.href = `/api/download?job=${encodeURIComponent(item.id)}`;
     link.textContent = '下载';
@@ -339,6 +364,25 @@ function queueRow(item, index) {
     clean.textContent = '清理';
     clean.addEventListener('click', () => cleanup(item));
     actions.appendChild(clean);
+  }
+
+  // 中断 / 失败 / 取消：一键继续，只补缺失分片
+  if (item.status === 'interrupted' || item.status === 'failed' || item.status === 'cancelled') {
+    if (!item.url) {
+      const bind = document.createElement('button');
+      bind.className = 'primary small';
+      bind.textContent = '绑定链接';
+      bind.title = '磁盘恢复的任务没有记录原始地址，填入后才能续传';
+      bind.addEventListener('click', () => bindUrl(item));
+      actions.appendChild(bind);
+    } else {
+      const resume = document.createElement('button');
+      resume.className = 'primary small';
+      resume.textContent = '继续';
+      resume.title = '只补缺失的分片，已下载的不会重下';
+      resume.addEventListener('click', () => retryItem(item));
+      actions.appendChild(resume);
+    }
   }
 
   if (item.status !== 'running') {
@@ -367,12 +411,13 @@ function renderQueue() {
 
 function resultRow(item) {
   const complete = item.status === 'done';
+  const interrupted = item.status === 'interrupted';
   const el = document.createElement('div');
-  el.className = `result-row ${complete ? 'ok' : item.status === 'cancelled' ? 'warn' : 'bad'}`;
+  el.className = `result-row ${complete ? 'ok' : item.status === 'failed' ? 'bad' : 'warn'}`;
 
   const icon = document.createElement('span');
   icon.className = 'r-icon';
-  icon.textContent = complete ? '✓' : item.status === 'cancelled' ? '⊘' : '✗';
+  icon.textContent = complete ? '✓' : item.status === 'cancelled' ? '⊘' : interrupted ? '⏸' : '✗';
 
   const body = document.createElement('span');
   body.className = 'r-body';
@@ -388,13 +433,14 @@ function resultRow(item) {
     noteEl.className = 'r-note';
     noteEl.textContent = `完整 · ${item.total} 片 · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}`;
     body.appendChild(noteEl);
-  } else if (item.status === 'failed') {
+  } else if (item.status === 'failed' || interrupted) {
     const miss = document.createElement('span');
     miss.className = 'r-missing';
-    miss.textContent =
-      item.failed.length > 0
-        ? `缺 ${item.failed.length} 片：${fmtRanges(item.failed)}`
-        : `失败：${item.error ?? '未知原因'}`;
+    if (item.failed.length > 0) {
+      miss.textContent = `${interrupted ? '中断' : '失败'} · 缺 ${item.failed.length} 片：${fmtRanges(item.failed)}`;
+    } else {
+      miss.textContent = interrupted ? `中断 · ${item.error ?? '待续传'}` : `失败：${item.error ?? '未知原因'}`;
+    }
     body.appendChild(miss);
   } else {
     const noteEl = document.createElement('span');
@@ -405,17 +451,25 @@ function resultRow(item) {
 
   const meta = document.createElement('span');
   meta.className = 'r-meta';
-  meta.textContent = item.status === 'cancelled' ? '—' : `${item.downloaded}/${item.total}`;
+  meta.textContent = item.status === 'cancelled' ? '—' : `${item.downloaded}/${item.total || '?'}`;
 
   const actions = document.createElement('span');
   actions.className = 'r-actions';
 
-  if (item.status === 'failed' || item.status === 'cancelled') {
-    const retry = document.createElement('button');
-    retry.className = 'primary small';
-    retry.textContent = '补齐缺失';
-    retry.addEventListener('click', () => retryItem(item));
-    actions.appendChild(retry);
+  if (item.status === 'failed' || item.status === 'cancelled' || interrupted) {
+    if (!item.url) {
+      const bind = document.createElement('button');
+      bind.className = 'primary small';
+      bind.textContent = '绑定链接';
+      bind.addEventListener('click', () => bindUrl(item));
+      actions.appendChild(bind);
+    } else {
+      const retry = document.createElement('button');
+      retry.className = 'primary small';
+      retry.textContent = interrupted ? '继续下载' : '补齐缺失';
+      retry.addEventListener('click', () => retryItem(item));
+      actions.appendChild(retry);
+    }
   }
 
   if (item.outputPath) {
@@ -438,7 +492,11 @@ function resultRow(item) {
 
 function renderResults() {
   const finished = queue.filter(
-    (i) => i.status === 'done' || i.status === 'failed' || i.status === 'cancelled',
+    (i) =>
+      i.status === 'done' ||
+      i.status === 'failed' ||
+      i.status === 'cancelled' ||
+      i.status === 'interrupted',
   );
   const box = $('results');
 
@@ -449,12 +507,17 @@ function renderResults() {
 
   const okCount = finished.filter((i) => i.status === 'done').length;
   const badCount = finished.filter((i) => i.status === 'failed').length;
+  const interCount = finished.filter((i) => i.status === 'interrupted').length;
   const missing = finished.reduce((sum, i) => sum + i.failed.length, 0);
 
   $('resultsummary').textContent =
-    `${finished.length} 项 · ${okCount} 完整` + (badCount ? ` · ${badCount} 待补齐（缺 ${missing} 片）` : '');
+    `${finished.length} 项 · ${okCount} 完整` +
+    (interCount ? ` · ${interCount} 中断` : '') +
+    (badCount ? ` · ${badCount} 待补齐（缺 ${missing} 片）` : '');
 
-  $('retryall').hidden = !finished.some((i) => i.status === 'failed' || i.status === 'cancelled');
+  $('retryall').hidden = !finished.some(
+    (i) => (i.status === 'failed' || i.status === 'cancelled' || i.status === 'interrupted') && i.url,
+  );
 
   const list = $('resultlist');
   list.innerHTML = '';
@@ -485,6 +548,19 @@ function applyQueue(snap) {
   jobOrder = new Map(queue.map((it, i) => [it.id, i + 1]));
   const jobIdx = runningId ? jobOrder.get(runningId) : null;
   $('termjob').textContent = jobIdx && queue.length > 1 ? `#${jobIdx}/${queue.length}` : '';
+
+  if (!recoveredAnnounced) {
+    const interrupted = queue.filter((i) => i.status === 'interrupted');
+    if (interrupted.length > 0) {
+      recoveredAnnounced = true;
+      banner(
+        '发现中断的任务',
+        `${interrupted.length} 个`,
+        '磁盘上的分片还在，点「继续」只补缺失部分',
+      );
+    }
+  }
+
   renderQueue();
   renderResults();
   updateButtons();
@@ -499,13 +575,29 @@ function printSummary(summary) {
   const ok = summary.filter((i) => i.status === 'done').length;
   const bad = summary.filter((i) => i.status === 'failed').length;
   const cancelled = summary.filter((i) => i.status === 'cancelled').length;
+  const interrupted = summary.filter((i) => i.status === 'interrupted').length;
   const pending = summary.filter((i) => i.status === 'pending').length;
 
-  banner('队列结束', `${ok} 成功`, `${bad} 失败`, `${cancelled} 取消`, pending ? `${pending} 未执行` : '');
+  banner(
+    '队列结束',
+    `${ok} 成功`,
+    `${bad} 失败`,
+    cancelled ? `${cancelled} 取消` : '',
+    interrupted ? `${interrupted} 中断（可继续）` : '',
+    pending ? `${pending} 未执行` : '',
+  );
 
   for (const item of summary) {
-    const mark = item.status === 'done' ? '✓' : item.status === 'failed' ? '✗' : '⊘';
-    const cls = item.status === 'done' ? 'ok' : item.status === 'failed' ? 'err' : 'warn';
+    const mark =
+      item.status === 'done'
+        ? '✓'
+        : item.status === 'failed'
+          ? '✗'
+          : item.status === 'interrupted'
+            ? '⏸'
+            : '⊘';
+    const cls =
+      item.status === 'done' ? 'ok' : item.status === 'failed' ? 'err' : 'warn';
     const meta =
       item.status === 'pending'
         ? '未执行'
@@ -631,6 +723,8 @@ async function enqueue(startNow) {
     $('note').value = '';
   }
   if (data.duplicates) note(`跳过重复地址 ${data.duplicates} 个`);
+  if (data.reused) note(`复用磁盘上已有的目录 ${data.reused} 个（只补缺失分片，不会重下）`);
+  if (data.completed) note(`其中 ${data.completed} 个已经是完整成品，可直接下载`);
   if (data.overflow) note(`队列已满（上限 ${maxQueue}），忽略 ${data.overflow} 个`);
 
   if (startNow) await fetch('/api/queue/start', { method: 'POST' });
@@ -719,8 +813,52 @@ async function retryItem(item) {
     note(`补齐失败：${data.error || res.status}`);
     return;
   }
-  banner('已加入补齐队列', item.url);
+  banner('已加入补齐队列', item.note ?? item.url);
   await fetch('/api/queue/start', { method: 'POST' });
+}
+
+/** 给磁盘恢复出来、但没有原始链接的老任务补地址 */
+async function bindUrl(item) {
+  const input = prompt(
+    `「${item.note ?? item.taskName}」是从磁盘恢复的，没有记录原始播放列表地址。\n\n` +
+      `请粘贴它对应的 m3u8 地址（用来续传缺失分片）：`,
+    item.url || '',
+  );
+  if (input === null) return;
+  const value = input.trim();
+  if (!value) return;
+
+  const res = await fetch('/api/queue/attach', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: item.id, url: value }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    note(`绑定失败：${data.error || res.status}`);
+    return;
+  }
+  banner('链接已绑定', item.note ?? item.taskName);
+  if (data.queue) applyQueue(data.queue);
+}
+
+/** 重新扫一遍磁盘，把断电前留下的任务目录认领回队列 */
+async function rescanDisk() {
+  const res = await fetch('/api/queue/recover', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    note(`扫描失败：${data.error || res.status}`);
+    return;
+  }
+  if (data.queue) applyQueue(data.queue);
+  if (data.adopted > 0) {
+    banner('已从磁盘恢复', `${data.adopted} 个任务`, data.refreshed ? `${data.refreshed} 个已刷新` : '');
+  } else if (data.refreshed > 0) {
+    note(`已刷新 ${data.refreshed} 个任务的磁盘状态`);
+  } else {
+    note('磁盘上没有新的任务目录');
+  }
+  void loadFiles();
 }
 
 $('retryall').addEventListener('click', async () => {
@@ -891,5 +1029,6 @@ fetch('/api/queue')
   .catch(() => {});
 
 $('refreshfiles').addEventListener('click', loadFiles);
+$('recoverfiles').addEventListener('click', rescanDisk);
 void loadFiles();
 setInterval(loadFiles, 5000);

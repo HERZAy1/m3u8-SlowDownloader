@@ -95,7 +95,11 @@ export type TaskEvent =
 
 /* ---------------- 队列 ---------------- */
 
-export type QueueStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+/**
+ * interrupted = 上次进程是异常退出（断电/崩溃），磁盘上还有分片，可以续传。
+ * 与 cancelled 的区别：cancelled 是用户主动停的，interrupted 是没来得及停。
+ */
+export type QueueStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted';
 
 export interface QueueItemSnapshot {
   id: string;
@@ -119,6 +123,26 @@ export interface QueueItemSnapshot {
   addedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** 这条记录是从磁盘扫描恢复回来的（不是本次手动添加的） */
+  recovered?: boolean;
+}
+
+/** 磁盘扫描出的一个任务目录，用于断电后把任务找回来 */
+export interface DiskTaskInfo {
+  /** 绝对路径 */
+  dir: string;
+  /** 相对路径，形如 downloads/xxx */
+  relDir: string;
+  name: string;
+  /** state.json 里记录的播放列表地址；老目录可能没有 */
+  url: string;
+  total: number;
+  present: number;
+  missing: number[];
+  hasOutput: boolean;
+  startedAt: number | null;
+  elapsedMs: number;
+  durationSec: number | null;
 }
 
 /** 磁盘上一个任务留下的文件 */

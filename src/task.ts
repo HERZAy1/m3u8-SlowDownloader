@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { CancelledError, TaskControl } from './control.ts';
 import { CHROME_HEADERS } from './headers.ts';
 import { FetchHttpClient } from './http.ts';
@@ -7,6 +7,7 @@ import { mergeSegments } from './merge.ts';
 import { parsePlaylist } from './playlist.ts';
 import { runSchedule } from './scheduler.ts';
 import { SegmentStore } from './store.ts';
+import type { StateStatus, TaskStateFile } from './store.ts';
 import type { HttpClient, Playlist, TaskEvent } from './types.ts';
 
 export interface DownloadTaskOptions {
@@ -22,6 +23,8 @@ export interface DownloadTaskOptions {
   merge?: boolean;
   remux?: boolean;
   dryRun?: boolean;
+  /** 用户备注（= 目录名），只用于写进 state.json 供断电后恢复显示名 */
+  note?: string;
   client?: HttpClient;
   headers?: Record<string, string>;
 }
@@ -35,6 +38,9 @@ export interface RunResult {
   elapsedMs: number;
   outputPath: string | null;
 }
+
+/** 运行中多久落一次 state.json：太频繁会拖慢下载，太长则断电后丢失进度细节。 */
+const STATE_SAVE_INTERVAL_MS = 5000;
 
 export class DownloadTask {
   readonly control = new TaskControl();
@@ -107,8 +113,36 @@ export class DownloadTask {
     const outDir = resolve(this.options.outDir);
     const store = new SegmentStore(outDir);
     await store.init();
+
+    // 断电/崩溃可能留下半截分片，先清掉，免得被当成"已完成"混进成品
+    const cleaned = await store.cleanupPartials();
+    if (cleaned > 0) this.emit({ type: 'log', message: `清理了 ${cleaned} 个未写完的临时文件` });
+
     await store.savePlaylist(text);
     this.emit({ type: 'log', message: `输出目录：${outDir}` });
+
+    // 一开跑就落一次状态：这样即使下一步就断电，磁盘上也已经记着"这个目录属于哪个链接"
+    const stateBase: TaskStateFile = {
+      version: 2,
+      url: this.options.url,
+      createdAt: new Date(startedAt).toISOString(),
+      t0: startedAt,
+      speed,
+      total,
+      failed: [],
+      status: 'running',
+      note: this.options.note,
+      taskName: basename(outDir),
+      downloaded: 0,
+      bytes: 0,
+      merge: shouldMerge,
+      remux: this.options.remux ?? false,
+      limit: Number.isFinite(limit) ? limit : undefined,
+      jitterMs,
+      retries,
+      updatedAt: new Date().toISOString(),
+    };
+    await store.writeState(stateBase).catch(() => {});
 
     this.emit({ type: 'phase', phase: 'downloading' });
 
@@ -125,9 +159,32 @@ export class DownloadTask {
       }
     }
 
+    let lastStateSave = Date.now();
+    let savingState = false;
+    const elapsedOf = (): number => Date.now() - startedAt - this.control.totalPausedMs;
+
+    /** 节流落盘：断电后最多丢 5 秒的统计数字，分片文件本身是逐片原子的。 */
+    const saveProgressState = (): void => {
+      if (savingState || Date.now() - lastStateSave < STATE_SAVE_INTERVAL_MS) return;
+      lastStateSave = Date.now();
+      savingState = true;
+      void store
+        .writeState({
+          ...stateBase,
+          downloaded: completed,
+          bytes,
+          elapsedMs: elapsedOf(),
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {})
+        .finally(() => {
+          savingState = false;
+        });
+    };
+
     const emitProgress = (): void => {
       const remainingDuration = Math.max(0, totalDuration - completedDuration);
-      const elapsedMs = Date.now() - startedAt - this.control.totalPausedMs;
+      const elapsedMs = elapsedOf();
       this.emit({
         type: 'progress',
         snapshot: {
@@ -142,88 +199,104 @@ export class DownloadTask {
           speed,
         },
       });
+      saveProgressState();
     };
 
     emitProgress();
 
-    const result = await runSchedule(
-      segments,
-      client,
-      this.control,
-      { speed, jitterMs, retries, paceExisting: resumeMode === 'pace', onTick: emitProgress },
-      {
-        isDone: (index) => store.has(index),
-        save: (index, data) => store.write(index, data),
-        onSegment: (report) => {
-          currentIndex = report.index;
-          if (report.ok) {
-            completed += 1;
-            completedDuration += report.duration;
-            bytes += report.bytes;
-          }
-          this.emit({
-            type: 'segment',
-            index: report.index,
-            ok: report.ok,
-            bytes: report.bytes,
-            attempts: report.attempts,
-            duration: report.duration,
-            plannedAt: report.plannedAt,
-            startedAt: report.startedAt,
-            finishedAt: report.finishedAt,
-          });
-          emitProgress();
-        },
-        onError: (index, message, attempt) => {
-          this.emit({ type: 'error', index, message, attempt });
-        },
-      },
-    );
-
     let outputPath: string | null = null;
+    let failedList: number[] = [];
+    let downloadedCount = 0;
+    let stateStatus: StateStatus = 'running';
 
-    if (shouldMerge && result.failed.length === 0) {
-      this.emit({ type: 'phase', phase: 'merging' });
-      outputPath = resolve(outDir, 'output.ts');
-      await mergeSegments(store, total, { outputPath });
+    try {
+      const result = await runSchedule(
+        segments,
+        client,
+        this.control,
+        { speed, jitterMs, retries, paceExisting: resumeMode === 'pace', onTick: emitProgress },
+        {
+          isDone: (index) => store.has(index),
+          save: (index, data) => store.write(index, data),
+          onSegment: (report) => {
+            currentIndex = report.index;
+            if (report.ok) {
+              completed += 1;
+              completedDuration += report.duration;
+              bytes += report.bytes;
+            }
+            this.emit({
+              type: 'segment',
+              index: report.index,
+              ok: report.ok,
+              bytes: report.bytes,
+              attempts: report.attempts,
+              duration: report.duration,
+              plannedAt: report.plannedAt,
+              startedAt: report.startedAt,
+              finishedAt: report.finishedAt,
+            });
+            emitProgress();
+          },
+          onError: (index, message, attempt) => {
+            this.emit({ type: 'error', index, message, attempt });
+          },
+        },
+      );
 
-      if (this.options.remux) {
-        this.emit({ type: 'phase', phase: 'remuxing' });
-        const fixedPath = outputPath.replace(/\.ts$/, '.fixed.ts');
-        await remuxWithFfmpeg(outputPath, fixedPath);
-        outputPath = fixedPath;
+      failedList = result.failed;
+      downloadedCount = result.downloaded;
+
+      if (shouldMerge && result.failed.length === 0) {
+        this.emit({ type: 'phase', phase: 'merging' });
+        outputPath = resolve(outDir, 'output.ts');
+        await mergeSegments(store, total, { outputPath });
+
+        if (this.options.remux) {
+          this.emit({ type: 'phase', phase: 'remuxing' });
+          const fixedPath = outputPath.replace(/\.ts$/, '.fixed.ts');
+          await remuxWithFfmpeg(outputPath, fixedPath);
+          outputPath = fixedPath;
+        }
       }
+
+      stateStatus = failedList.length > 0 ? 'failed' : 'done';
+    } catch (err) {
+      // 取消 / 段错误：把已下载的部分标成"中断"，下次能直接续
+      stateStatus = err instanceof CancelledError ? 'interrupted' : 'failed';
+      throw err;
+    } finally {
+      const elapsedMs = elapsedOf();
+      const finalState: TaskStateFile = {
+        ...stateBase,
+        failed: failedList,
+        downloaded: downloadedCount,
+        bytes,
+        elapsedMs,
+        status: stateStatus,
+        updatedAt: new Date().toISOString(),
+      };
+      if (stateStatus !== 'running') finalState.finishedAt = new Date().toISOString();
+      await store.writeState(finalState).catch(() => {});
     }
 
-    const elapsedMs = Date.now() - startedAt - this.control.totalPausedMs;
-
-    await store.writeState({
-      version: 1,
-      url: this.options.url,
-      createdAt: new Date(startedAt).toISOString(),
-      t0: startedAt,
-      speed,
-      total,
-      failed: result.failed,
-      elapsedMs,
-      finishedAt: new Date().toISOString(),
-    });
+    const elapsedMs = elapsedOf();
 
     this.emit({
       type: 'done',
-      failed: result.failed,
+      failed: failedList,
       outputPath,
       elapsedMs,
-      bytes: result.bytes,
+      bytes,
     });
     this.emit({ type: 'phase', phase: 'done' });
 
     return {
       playlist,
       total,
-      downloaded: result.downloaded,
-      failed: result.failed,
-      bytes: result.bytes,
+      downloaded: downloadedCount,
+      failed: failedList,
+      bytes,
       elapsedMs,
       outputPath,
     };
