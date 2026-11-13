@@ -262,7 +262,7 @@ async function main() {
     'utf8',
   );
   for (let i = 1; i <= 4; i += 1) {
-    await writeFile(join(legacy, 'segments', `${String(i).padStart(4, '0')}.ts`), Buffer.alloc(SEG_BYTES, 65));
+    await writeFile(join(legacy, 'segments', `${String(i).padStart(4, '0')}.ts`), Buffer.alloc(SEG_BYTES - 100, 65));
   }
   log(`已伪造一个老版本任务目录 downloads/play（state.json 里没有 url，只有 4/${TOTAL} 片）`);
 
@@ -300,7 +300,23 @@ async function main() {
   const legacyFetched = segHits() - beforeLegacy;
   check(`老目录只补了缺失的 ${TOTAL - 4} 片`, legacyFetched === TOTAL - 4, `请求 ${legacyFetched} 次`);
   const legacyOut = await stat(join(legacy, 'output.ts')).catch(() => null);
-  check('老目录成品大小正确', legacyOut?.size === TOTAL * SEG_BYTES, `size=${legacyOut?.size}`);
+  const legacySize = 4 * (SEG_BYTES - 100) + (TOTAL - 4) * SEG_BYTES;
+  check('老目录成品大小正确', legacyOut?.size === legacySize, `size=${legacyOut?.size}`);
+
+  // ---- 阶段 8：按 path 下载必须命中指定目录，而不是"最新的成品" ----
+  const byPathLegacy = await fetch(`http://127.0.0.1:${PORT}/api/download?path=${encodeURIComponent(legacy)}`);
+  const legacyBytes = (await byPathLegacy.arrayBuffer()).byteLength;
+  check('按 path 下到的是指定目录', byPathLegacy.ok && legacyBytes === legacySize, `${byPathLegacy.status} ${legacyBytes}B`);
+
+  const byPathOther = await fetch(
+    `http://127.0.0.1:${PORT}/api/download?path=${encodeURIComponent(join(WORK, 'downloads', '断电测试'))}`,
+  );
+  const otherBytes = (await byPathOther.arrayBuffer()).byteLength;
+  check(
+    '按 path 不会下到别的任务',
+    byPathOther.ok && otherBytes === TOTAL * SEG_BYTES,
+    `${byPathOther.status} ${otherBytes}B`,
+  );
 
   gui.kill('SIGKILL');
   origin.close();

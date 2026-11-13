@@ -337,9 +337,8 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
             target = { path: outPath, name: `${name}.ts` };
           }
         }
-        if (!target) target = await resolveOutput(url.searchParams.get('task'));
-
         // 文件管理页按绝对路径下载（目录名可能重名或被备注改名）
+        // 必须排在 resolveOutput 的"取最新成品"兜底之前，否则会下到别的任务
         const wantPath = url.searchParams.get('path');
         if (!target && wantPath) {
           const dir = resolve(wantPath);
@@ -352,6 +351,8 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
             }
           }
         }
+
+        if (!target) target = await resolveOutput(url.searchParams.get('task'));
 
         if (!target) {
           json(res, 404, { error: '没有可下载的文件' });
