@@ -245,7 +245,8 @@ export class DownloadTask {
       );
 
       failedList = result.failed;
-      downloadedCount = result.downloaded;
+      // 用累计值而不是本次新下的数量：续传后界面显示 30/30 而不是 21/30
+      downloadedCount = completed;
 
       if (shouldMerge && result.failed.length === 0) {
         this.emit({ type: 'phase', phase: 'merging' });

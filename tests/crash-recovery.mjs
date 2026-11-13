@@ -201,6 +201,7 @@ async function main() {
   const final = (await api('/api/queue')).body.items[0];
   const fetched = segHits() - before;
   check('续传后完成', final.status === 'done', `status=${final.status} failed=${final.failed.length}`);
+  check('续传后进度显示满额', final.downloaded === TOTAL, `${final.downloaded}/${final.total}`);
   check(
     '只补了缺失分片（没有重下）',
     fetched <= TOTAL - midwayCount + 2,
