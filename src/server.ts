@@ -203,6 +203,8 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
         });
         res.write(': connected\n\n');
         for (const event of session.events) res.write(`data: ${JSON.stringify(event)}\n\n`);
+        /* 回放结束标记：前端据此区分「历史回放」与「实时事件」，避免重复弹提示 */
+        res.write('data: {"type":"ready"}\n\n');
         session.clients.add(res);
         req.on('close', () => session.clients.delete(res));
         return;

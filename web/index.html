@@ -4,158 +4,269 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#07080b" />
     <title>m3u8 Downloader</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <div class="topbar">
+    <div class="aura" aria-hidden="true"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
+
+    <header class="topbar">
+      <div class="topline" id="topline" aria-hidden="true"></div>
       <div class="brand">
-        <span class="mark">▶</span>
-        <span class="name">m3u8 Downloader</span>
-        <span class="ver">v0.3.0</span>
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3.6v10.2" />
+            <path d="m7.7 9.9 4.3 4.3 4.3-4.3" />
+            <path d="M4.9 19.4h14.2" />
+          </svg>
+        </span>
+        <span class="brand-text">
+          <span class="name">m3u8 Downloader</span>
+          <span class="ver">v0.4.0</span>
+        </span>
       </div>
-      <a class="gh" href="https://github.com/HERZAy1/m3u8-SlowDownloader" target="_blank" rel="noopener">GitHub ↗</a>
-    </div>
+      <div class="topbar-right">
+        <span class="conn" id="conn" data-state="idle"><i></i><b>连接中</b></span>
+        <a
+          class="icon-btn"
+          href="https://github.com/HERZAy1/m3u8-SlowDownloader"
+          target="_blank"
+          rel="noopener"
+          aria-label="GitHub 仓库"
+          title="GitHub"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path
+              d="M12 .5a11.5 11.5 0 0 0-3.64 22.42c.58.1.79-.25.79-.5v-1.76c-3.2.7-3.88-1.54-3.88-1.54-.53-1.34-1.3-1.7-1.3-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.78 1.19 1.78 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.39-5.25 5.67.41.36.78 1.06.78 2.14v3.17c0 .26.21.61.8.5A11.5 11.5 0 0 0 12 .5Z"
+            />
+          </svg>
+        </a>
+      </div>
+    </header>
 
     <main>
-      <section class="card">
-        <label class="field wide">
-          <span class="label">播放列表地址（每行一个，可一次粘贴多个）</span>
-          <textarea
-            id="urls"
-            rows="3"
-            placeholder="https://…/play-1.m3u8&#10;https://…/play-2.m3u8"
-            spellcheck="false"
-          ></textarea>
-        </label>
+      <!-- ============ 新建任务 ============ -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">
+            <svg class="panel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            新建任务
+          </h2>
+          <span class="panel-sub">每行一个播放列表地址 · 一个任务对应一集</span>
+        </div>
 
-        <div class="grid">
-          <div class="field">
-            <span class="label">倍速</span>
-            <input id="speed" type="number" value="2" min="0" max="50" step="0.5" />
-            <div class="chips" id="speedchips">
-              <button type="button" data-speed="1">1x</button>
-              <button type="button" data-speed="2">2x</button>
-              <button type="button" data-speed="4">4x</button>
-              <button type="button" data-speed="8">8x</button>
+        <div class="panel-body composer">
+          <div class="cmp-main">
+            <label class="field">
+              <span class="label">播放列表地址</span>
+              <textarea
+                id="urls"
+                rows="4"
+                placeholder="https://…/play-1.m3u8&#10;https://…/play-2.m3u8"
+                spellcheck="false"
+              ></textarea>
+            </label>
+            <div class="cmp-row">
+              <label class="field">
+                <span class="label">备注 · 用作目录名与文件名</span>
+                <input id="note" type="text" placeholder="例：第 3 讲 网络协议" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span class="label">输出目录</span>
+                <input
+                  id="out"
+                  type="text"
+                  placeholder="留空 = downloads/&lt;任务名&gt;"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
             </div>
           </div>
-          <label class="field">
-            <span class="label">抖动 (ms)</span>
-            <input id="jitter" type="number" value="300" min="0" max="5000" step="50" />
-          </label>
-          <label class="field">
-            <span class="label">重试次数</span>
-            <input id="retries" type="number" value="3" min="0" max="10" step="1" />
-          </label>
-          <label class="field">
-            <span class="label">只下前 N 片</span>
-            <input id="limit" type="number" placeholder="全部" min="1" step="1" />
-          </label>
+
+          <div class="cmp-side">
+            <div class="field">
+              <span class="label">倍速</span>
+              <input id="speed" type="number" value="2" min="0" max="50" step="0.5" />
+              <div class="chips" id="speedchips">
+                <button type="button" class="chip" data-speed="1">1x</button>
+                <button type="button" class="chip" data-speed="2">2x</button>
+                <button type="button" class="chip" data-speed="4">4x</button>
+                <button type="button" class="chip" data-speed="8">8x</button>
+              </div>
+            </div>
+            <div class="cmp-row">
+              <label class="field">
+                <span class="label">抖动 (ms)</span>
+                <input id="jitter" type="number" value="300" min="0" max="5000" step="50" />
+              </label>
+              <label class="field">
+                <span class="label">重试次数</span>
+                <input id="retries" type="number" value="3" min="0" max="10" step="1" />
+              </label>
+            </div>
+            <label class="field">
+              <span class="label">只下前 N 片</span>
+              <input id="limit" type="number" placeholder="全部" min="1" step="1" />
+            </label>
+          </div>
         </div>
 
-        <div class="grid grid-2">
-          <label class="field">
-            <span class="label">备注（留空则用原文件名）</span>
-            <input id="note" type="text" placeholder="例：第 3 讲 网络协议" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span class="label">输出目录（有备注时以备注为准）</span>
-            <input
-              id="out"
-              type="text"
-              placeholder="留空 = downloads/&lt;任务名&gt;"
-              autocomplete="off"
-              spellcheck="false"
-            />
-          </label>
-        </div>
-
-        <div class="actions">
-          <button id="enqueue">加入队列</button>
-          <button id="start" class="primary">开始队列</button>
-          <button id="pause" disabled>暂停</button>
-          <button id="stop" disabled>停止</button>
-          <button id="clear" class="ghost">清空已完成</button>
-          <label class="check"><input id="remux" type="checkbox" /> 用 ffmpeg 修复时间戳</label>
-        </div>
-      </section>
-
-      <section class="card queue-card">
-        <div class="queue-head">
-          <span class="queue-title">队列</span>
-          <span id="queuecount" class="queue-count">0 / 20</span>
-          <span id="queuetotal" class="queue-total"></span>
-          <span class="grow"></span>
-          <span id="queuesummary" class="queue-summary"></span>
-        </div>
-        <div id="queuelist" class="queue-list">
-          <div class="queue-empty" id="queueempty">队列为空 —— 粘贴地址后点「加入队列」</div>
-        </div>
-      </section>
-
-      <section id="results" class="card results" hidden>
-        <div class="results-head">
-          <span class="results-title">结果</span>
-          <span id="resultsummary" class="results-summary"></span>
-          <span class="grow"></span>
-          <button id="retryall" class="primary small" hidden>补齐全部缺失</button>
-          <button id="clearresults" class="small">清空结果</button>
-        </div>
-        <div id="resultlist" class="results-list"></div>
-      </section>
-
-      <section class="card files-card">
-        <div class="files-head">
-          <span class="files-title">文件</span>
-          <span id="filessummary" class="files-summary"></span>
-          <span class="grow"></span>
-          <button id="recoverfiles" class="small" title="扫描磁盘上已有的任务目录，把断电/崩溃前的任务找回来">
-            恢复任务
+        <div class="panel-foot actions">
+          <button id="enqueue" class="btn">加入队列</button>
+          <button id="start" class="btn primary">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6L19 12z" /></svg>
+            开始队列
           </button>
-          <button id="refreshfiles" class="small">刷新</button>
-        </div>
-        <div id="filelist" class="files-list">
-          <div class="files-empty">正在扫描…</div>
+          <button id="pause" class="btn" disabled>暂停</button>
+          <button id="stop" class="btn" disabled>停止</button>
+          <span class="grow"></span>
+          <label class="check"><input id="remux" type="checkbox" /> ffmpeg 修复时间戳</label>
+          <button id="clear" class="btn ghost">清空已完成</button>
         </div>
       </section>
 
-      <section class="card term">
-        <div class="term-head">
-          <span class="dot idle" id="dot"></span>
-          <span id="termstate">就绪</span>
+      <!-- ============ 控制台 ============ -->
+      <section class="panel console" id="console" data-state="idle">
+        <div class="panel-head">
+          <span class="dot" id="dot"></span>
+          <h2 class="panel-title" id="termstate">就绪</h2>
+          <span class="panel-sub" id="termjob"></span>
           <span class="grow"></span>
-          <span id="termjob"></span>
-          <span id="termspeed">—</span>
+          <span class="panel-sub">进度条实时推进 · 日志只记录失败分片</span>
         </div>
 
-        <div class="progress-strip">
+        <div class="progress">
           <div class="progress-top">
             <div class="bar"><div id="fill"></div></div>
-            <span id="pct" class="pct">0.0%</span>
+            <span class="pct" id="pct">0.0%</span>
           </div>
-          <div class="progress-meta">
-            <span id="count">—</span>
-            <span id="elapsed">已用 —</span>
-            <span id="eta">剩余 —</span>
-            <span id="size">—</span>
-            <span id="retrynote" class="retry-note"></span>
+
+          <div class="metrics">
+            <div class="metric">
+              <span class="mk">分片</span>
+              <span class="mv" id="count">—</span>
+            </div>
+            <div class="metric">
+              <span class="mk">已用</span>
+              <span class="mv" id="elapsed">—</span>
+            </div>
+            <div class="metric">
+              <span class="mk">剩余</span>
+              <span class="mv" id="eta">—</span>
+            </div>
+            <div class="metric">
+              <span class="mk">体积</span>
+              <span class="mv" id="size">—</span>
+            </div>
+            <div class="metric">
+              <span class="mk">倍速</span>
+              <span class="mv" id="termspeed">—</span>
+            </div>
+            <div class="spark" title="最近一分钟的实际下载速率">
+              <canvas id="spark"></canvas>
+              <span class="spark-rate" id="rate">—</span>
+            </div>
           </div>
+
+          <div class="retry-note" id="retrynote"></div>
         </div>
 
         <div id="log" class="log" role="log" aria-live="off">
           <div class="empty" id="empty">
+            <span class="empty-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <circle cx="12" cy="12" r="8.4" stroke-dasharray="3 4" />
+                <path d="M12 8.4v5.2" />
+                <path d="m9.9 11.6 2.1 2.1 2.1-2.1" />
+              </svg>
+            </span>
             <b>等待任务</b>
             <span>填入 m3u8 地址后点「开始队列」，这里会逐片实时输出。</span>
           </div>
         </div>
       </section>
 
+      <!-- ============ 队列 ============ -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">
+            <svg class="panel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h10" />
+            </svg>
+            队列
+          </h2>
+          <span class="pill" id="queuecount">0 / 20</span>
+          <span class="panel-sub" id="queuetotal"></span>
+          <span class="grow"></span>
+          <span class="panel-sub" id="queuesummary"></span>
+        </div>
+        <div id="queuelist" class="list">
+          <div class="list-empty" id="queueempty">
+            <span class="le-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <path d="M4 7h16M4 12h16M4 17h10" />
+              </svg>
+            </span>
+            <b>队列为空</b>
+            <span>粘贴地址后点「加入队列」，最多 20 个</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 结果 ============ -->
+      <section id="results" class="panel results" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title">
+            <svg class="panel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 6 9.5 16.5 4 11" />
+            </svg>
+            结果
+          </h2>
+          <span class="panel-sub" id="resultsummary"></span>
+          <span class="grow"></span>
+          <button id="retryall" class="btn primary sm" hidden>补齐全部缺失</button>
+          <button id="clearresults" class="btn sm">清空结果</button>
+        </div>
+        <div id="resultlist" class="list"></div>
+      </section>
+
+      <!-- ============ 文件 ============ -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">
+            <svg class="panel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3.5 7.5h6l1.8 2H20a.5.5 0 0 1 .5.5v8a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1V8a.5.5 0 0 1 .5-.5Z" />
+            </svg>
+            文件
+          </h2>
+          <span class="panel-sub" id="filessummary"></span>
+          <span class="grow"></span>
+          <button id="recoverfiles" class="btn sm" title="扫描磁盘上已有的任务目录，把断电/崩溃前的任务找回来">
+            恢复任务
+          </button>
+          <button id="refreshfiles" class="btn sm">刷新</button>
+        </div>
+        <div id="filelist" class="list">
+          <div class="list-empty">正在扫描…</div>
+        </div>
+      </section>
+
       <footer>
         <span>仅用于下载你有权访问的内容 · 全部在本地运行，不收集任何数据</span>
-        <span>MIT License</span>
+        <span class="foot-keys">
+          <kbd>Ctrl</kbd><kbd>↵</kbd> 开始 · <kbd>Esc</kbd> 停止 · MIT License
+        </span>
       </footer>
     </main>
+
+    <!-- 浮层 -->
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+    <dialog class="dlg" id="dlg"></dialog>
+
     <script src="/app.js"></script>
   </body>
 </html>

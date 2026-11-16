@@ -5,9 +5,11 @@ const emptyEl = $('empty');
 const fillEl = $('fill');
 const listEl = $('queuelist');
 const emptyRow = $('queueempty');
+const consoleEl = $('console');
 
 const MAX_LINES = 4000;
 const SETTINGS_KEY = 'm3u8dl.settings';
+const SPARK_MAX = 90;
 
 const STATUS_ICON = {
   pending: '○',
@@ -24,6 +26,14 @@ const STATUS_TEXT = {
   failed: '有缺失分片',
   cancelled: '已取消',
   interrupted: '中断（磁盘上有分片，可继续）',
+};
+const STATUS_LABEL = {
+  pending: '待处理',
+  running: '下载中',
+  done: '完成',
+  failed: '缺片',
+  cancelled: '已取消',
+  interrupted: '已中断',
 };
 
 let queue = [];
@@ -59,11 +69,19 @@ function fmtSize(bytes) {
   if (!bytes) return '—';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1048576).toFixed(1)} MB`;
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${(bytes / 1073741824).toFixed(2)} GB`;
+}
+
+function fmtRate(bps) {
+  if (!bps || bps < 1) return '—';
+  if (bps < 1048576) return `${(bps / 1024).toFixed(0)} KB/s`;
+  return `${(bps / 1048576).toFixed(2)} MB/s`;
 }
 
 /** [747,748,749,800] -> "747-749, 800" */
-function fmtRanges(nums) {  if (!nums || nums.length === 0) return '';
+function fmtRanges(nums) {
+  if (!nums || nums.length === 0) return '';
   const sorted = [...nums].sort((a, b) => a - b);
   const parts = [];
   let start = sorted[0];
@@ -86,6 +104,237 @@ function fmtDate(ts) {
   const d = new Date(ts);
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/* ---------------- Toast ---------------- */
+
+/** SSE 连接建立后，服务端会先回放历史事件；回放期间不弹 toast，避免刷新后一片提示 */
+let replaying = true;
+
+function toast(text, kind = 'info', ttl = 4200) {
+  if (replaying) return;
+  const box = $('toasts');
+  if (!box) return;
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+
+  const ico = document.createElement('span');
+  ico.className = 'ti';
+  ico.textContent = kind === 'ok' ? '✓' : kind === 'err' ? '✗' : kind === 'warn' ? '!' : 'i';
+
+  const body = document.createElement('span');
+  body.textContent = text;
+
+  el.append(ico, body);
+  box.appendChild(el);
+  while (box.childElementCount > 4) box.firstElementChild.remove();
+
+  const kill = () => {
+    if (!el.isConnected || el.classList.contains('leaving')) return;
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 220);
+  };
+  el.addEventListener('click', kill);
+  setTimeout(kill, ttl);
+}
+
+/* ---------------- 对话框 ---------------- */
+
+/**
+ * 统一的确认 / 输入弹窗，替代原生 confirm()、prompt()。
+ * 有 fields 时 resolve 为字符串数组，否则为 true / null（取消）。
+ */
+function askDialog(opts) {
+  const {
+    title,
+    message = '',
+    fields = [],
+    confirmText = '确定',
+    cancelText = '取消',
+    danger = false,
+  } = opts;
+
+  const dlg = $('dlg');
+  dlg.textContent = '';
+
+  const inner = document.createElement('div');
+  inner.className = 'dlg-inner';
+
+  const h = document.createElement('h3');
+  h.className = 'dlg-title';
+  h.textContent = title;
+  inner.appendChild(h);
+
+  if (message) {
+    const p = document.createElement('p');
+    p.className = 'dlg-msg';
+    p.textContent = message;
+    inner.appendChild(p);
+  }
+
+  const inputs = [];
+  for (const field of fields) {
+    const label = document.createElement('label');
+    label.className = 'field';
+
+    const cap = document.createElement('span');
+    cap.className = 'label';
+    cap.textContent = field.label ?? '';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = field.value ?? '';
+    if (field.placeholder) input.placeholder = field.placeholder;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+
+    label.append(cap, input);
+    inner.appendChild(label);
+    inputs.push(input);
+  }
+
+  const foot = document.createElement('div');
+  foot.className = 'dlg-foot';
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn ghost';
+  cancel.textContent = cancelText;
+
+  const ok = document.createElement('button');
+  ok.type = 'button';
+  ok.className = `btn ${danger ? 'danger' : 'primary'}`;
+  ok.textContent = confirmText;
+
+  foot.append(cancel, ok);
+  inner.appendChild(foot);
+  dlg.appendChild(inner);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+      dlg.close();
+    };
+
+    ok.addEventListener('click', () => {
+      finish(fields.length ? inputs.map((i) => i.value.trim()) : true);
+    });
+    cancel.addEventListener('click', () => finish(null));
+    dlg.oncancel = (event) => {
+      event.preventDefault();
+      finish(null);
+    };
+    dlg.onclick = (event) => {
+      if (event.target === dlg) finish(null);
+    };
+    inner.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.target.tagName === 'INPUT') {
+        event.preventDefault();
+        ok.click();
+      }
+    });
+
+    dlg.showModal();
+    const first = inputs[0];
+    if (first) {
+      first.focus();
+      first.select();
+    } else {
+      ok.focus();
+    }
+  });
+}
+
+/* ---------------- 速率火花线 ---------------- */
+
+const sparkEl = $('spark');
+const sparkCtx = sparkEl ? sparkEl.getContext('2d') : null;
+let sparkData = [];
+let sparkAnchor = { t: 0, bytes: 0 };
+let sparkRaf = 0;
+
+function resetSpark() {
+  sparkData = [];
+  sparkAnchor = { t: 0, bytes: 0 };
+  if ($('rate')) $('rate').textContent = '—';
+  drawSpark();
+}
+
+function sampleSpark(bytes) {
+  const now = performance.now();
+  if (!sparkAnchor.t) {
+    sparkAnchor = { t: now, bytes };
+    return;
+  }
+  const dt = now - sparkAnchor.t;
+  if (dt < 220) return;
+
+  const rate = Math.max(0, (bytes - sparkAnchor.bytes) / (dt / 1000));
+  sparkAnchor = { t: now, bytes };
+
+  sparkData.push(rate);
+  if (sparkData.length > SPARK_MAX) sparkData.shift();
+  if ($('rate')) $('rate').textContent = fmtRate(rate);
+  drawSpark();
+}
+
+function drawSpark() {
+  if (sparkRaf) return;
+  sparkRaf = requestAnimationFrame(() => {
+    sparkRaf = 0;
+    paintSpark();
+  });
+}
+
+function paintSpark() {
+  if (!sparkCtx) return;
+  const w = sparkEl.clientWidth;
+  const h = sparkEl.clientHeight;
+  if (!w || !h) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  if (sparkEl.width !== Math.round(w * dpr) || sparkEl.height !== Math.round(h * dpr)) {
+    sparkEl.width = Math.round(w * dpr);
+    sparkEl.height = Math.round(h * dpr);
+  }
+
+  const ctx = sparkCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (sparkData.length < 2) return;
+
+  const max = Math.max(...sparkData, 1);
+  const stepX = w / (SPARK_MAX - 1);
+  const x0 = w - (sparkData.length - 1) * stepX;
+  const pts = sparkData.map((value, i) => [
+    x0 + i * stepX,
+    h - 4 - (value / max) * (h - 12),
+  ]);
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(107, 140, 255, 0.45)');
+  grad.addColorStop(1, 'rgba(107, 140, 255, 0)');
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], h);
+  for (const [x, y] of pts) ctx.lineTo(x, y);
+  ctx.lineTo(pts[pts.length - 1][0], h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.strokeStyle = '#8ea8ff';
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
+
+window.addEventListener('resize', drawSpark);
 
 /* ---------------- 队列总耗时 ---------------- */
 
@@ -121,40 +370,77 @@ function updateQueueStats() {
 
 function fileRow(file) {
   const el = document.createElement('div');
-  el.className = 'file-row';
+  el.className = 'row file-row';
 
   const name = document.createElement('span');
   name.className = 'f-name';
-  name.textContent = file.name;
-  name.title = file.path;
+
+  const head = document.createElement('span');
+  head.className = 'f-head';
+
+  const title = document.createElement('b');
+  title.className = 'f-title';
+  title.textContent = file.name;
+  title.title = file.path;
+
+  const tag = document.createElement('span');
+  tag.className = `f-tag${file.hasOutput ? ' on' : ''}`;
+  tag.textContent = file.hasOutput ? `成品 ${fmtSize(file.outputBytes)}` : '无成品';
+
+  head.append(title, tag);
 
   const parts = document.createElement('span');
   parts.className = 'f-parts';
-  parts.textContent =
-    `分片 ${file.segments} 个 · ${fmtSize(file.segmentBytes)}` +
-    (file.hasOutput ? `　成品 ${fmtSize(file.outputBytes)}` : '　无成品');
+  parts.textContent = `分片 ${file.segments} 个 · ${fmtSize(file.segmentBytes)}`;
+
+  name.append(head, parts);
 
   const time = document.createElement('span');
   time.className = 'f-time';
   time.textContent = `${fmtDate(file.startedAt)} 起 · 用时 ${fmtDuration(file.durationMs ?? 0)}`;
 
-  const del = document.createElement('button');
-  del.className = 'danger';
-  del.textContent = '删除全部';
-  del.addEventListener('click', () => deleteTaskFiles(file));
+  const actions = document.createElement('span');
+  actions.className = 'q-actions';
 
   if (file.hasOutput) {
     const dl = document.createElement('a');
-    dl.className = 'f-dl';
+    dl.className = 'btn sm dl';
     dl.href = `/api/download?path=${encodeURIComponent(file.path)}`;
-    dl.textContent = '下载成品';
+    dl.textContent = '下载';
     dl.setAttribute('download', '');
-    el.append(name, parts, time, dl, del);
-    return el;
+    dl.title = '下载拼接好的成品';
+    actions.appendChild(dl);
   }
 
-  el.append(name, parts, time, del);
+  const del = document.createElement('button');
+  del.className = 'btn sm danger';
+  del.textContent = '删除';
+  del.title = '删除该任务的目录（分片 + 成品）';
+  del.addEventListener('click', () => deleteTaskFiles(file));
+  actions.appendChild(del);
+
+  el.append(name, time, actions);
   return el;
+}
+
+function emptyState(title, sub) {
+  const box = document.createElement('div');
+  box.className = 'list-empty';
+
+  const ico = document.createElement('span');
+  ico.className = 'le-ico';
+  ico.setAttribute('aria-hidden', 'true');
+  ico.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h6l1.8 2H20a.5.5 0 0 1 .5.5v8a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1V8a.5.5 0 0 1 .5-.5Z"/></svg>';
+
+  const b = document.createElement('b');
+  b.textContent = title;
+
+  const span = document.createElement('span');
+  span.textContent = sub;
+
+  box.append(ico, b, span);
+  return box;
 }
 
 function renderFiles() {
@@ -162,10 +448,7 @@ function renderFiles() {
   list.innerHTML = '';
 
   if (files.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'files-empty';
-    empty.textContent = '暂无文件';
-    list.appendChild(empty);
+    list.appendChild(emptyState('暂无文件', '下载完成后成品会出现在这里'));
     $('filessummary').textContent = '';
     return;
   }
@@ -188,18 +471,23 @@ async function loadFiles() {
 }
 
 async function deleteTaskFiles(file) {
-  const ok = confirm(
-    `删除 ${file.name} 的全部文件？\n\n` +
+  const ok = await askDialog({
+    title: '删除任务文件',
+    message:
+      `${file.name}\n\n` +
       `分片：${file.segments} 个（${fmtSize(file.segmentBytes)}）\n` +
       `成品：${file.hasOutput ? fmtSize(file.outputBytes) : '无'}\n` +
       `合计：${fmtSize(file.totalBytes)}\n\n删除后不可恢复。`,
-  );
+    confirmText: '删除全部',
+    danger: true,
+  });
   if (!ok) return;
 
   const res = await fetch(`/api/files?id=${encodeURIComponent(file.id)}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));
   if (res.ok) {
     banner('已删除任务文件', file.name, `释放 ${fmtSize(data.freedBytes)}`);
+    toast(`已删除 ${file.name}`, 'ok');
     await loadFiles();
   } else {
     note(`删除失败：${data.error || res.status}`);
@@ -235,6 +523,7 @@ function banner(title, ...meta) {
   strong.textContent = title;
   el.appendChild(strong);
   for (const item of meta) {
+    if (!item) continue;
     const span = document.createElement('span');
     span.className = 'dim';
     span.textContent = `  ${item}`;
@@ -243,11 +532,15 @@ function banner(title, ...meta) {
   push(el);
 }
 
+/** 轻量提示统一走右下角 toast，不再污染日志 */
 function note(text) {
-  const el = document.createElement('div');
-  el.className = 'banner';
-  el.textContent = text;
-  push(el);
+  if (!text) return;
+  const kind = /失败|错误|无法|异常|不再/.test(text)
+    ? 'err'
+    : /跳过|忽略|已满|重复/.test(text)
+      ? 'warn'
+      : 'info';
+  toast(text, kind);
 }
 
 function row(cells, cls, jobId) {
@@ -289,6 +582,21 @@ function failureRow(event, reason, jobId) {
 function setState(text, cls) {
   $('termstate').textContent = text;
   $('dot').className = `dot ${cls}`;
+  consoleEl.dataset.state = cls || 'idle';
+}
+
+function resetProgress() {
+  fillEl.style.width = '0%';
+  $('pct').textContent = '0.0%';
+  $('count').textContent = '—';
+  $('elapsed').textContent = '—';
+  $('eta').textContent = '—';
+  $('size').textContent = '—';
+  $('termspeed').textContent = '—';
+  $('retrynote').textContent = '';
+  resetSpark();
+  $('topline').style.width = '0%';
+  $('topline').classList.remove('on');
 }
 
 function renderProgress(snap) {
@@ -297,12 +605,19 @@ function renderProgress(snap) {
   fillEl.style.width = `${pct.toFixed(1)}%`;
   $('pct').textContent = `${pct.toFixed(1)}%`;
   $('count').textContent = `${snap.completed}/${snap.total}`;
-  $('elapsed').textContent = `已用 ${fmtDuration(snap.elapsedMs)}`;
-  $('eta').textContent = snap.speed > 0 ? `剩余 ${fmtDuration(snap.etaMs)}` : '不限速';
+  $('elapsed').textContent = fmtDuration(snap.elapsedMs);
+  $('eta').textContent = snap.speed > 0 ? fmtDuration(snap.etaMs) : '不限速';
   $('size').textContent = fmtSize(snap.bytes);
   $('termspeed').textContent = snap.speed > 0 ? `${snap.speed}x` : '不限速';
+  sampleSpark(snap.bytes);
 
-  const live = listEl.querySelector('.queue-row.running .q-meta');
+  const line = $('topline');
+  if (line) {
+    line.style.width = `${pct.toFixed(1)}%`;
+    line.classList.toggle('on', pct > 0 && pct < 100);
+  }
+
+  const live = listEl.querySelector('.q-row.st-running .q-meta');
   if (live) live.textContent = `${snap.completed}/${snap.total}`;
   updateQueueStats();
 }
@@ -310,13 +625,13 @@ function renderProgress(snap) {
 /* ---------------- 队列渲染 ---------------- */
 
 function metaText(item) {
-  if (item.status === 'pending') return '待处理';
+  if (item.status === 'pending') return '—';
   if (item.status === 'running') return `${item.downloaded}/${item.total || '?'}`;
   if (item.status === 'cancelled') return '已取消';
   if (item.status === 'interrupted') {
-    const total = item.total || '?';
+    const totalN = item.total || '?';
     const gap = item.failed.length > 0 ? `缺 ${item.failed.length} 片` : '待续传';
-    return `${item.downloaded}/${total} · ${gap}`;
+    return `${item.downloaded}/${totalN} · ${gap}`;
   }
   if (item.status === 'failed') return `${item.downloaded}/${item.total} · 缺 ${item.failed.length} 片`;
   return `${item.downloaded}/${item.total} · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}`;
@@ -324,21 +639,38 @@ function metaText(item) {
 
 function queueRow(item, index) {
   const el = document.createElement('div');
-  el.className = `queue-row ${item.status}`;
+  el.className = `row q-row st-${item.status}`;
 
   const idx = document.createElement('span');
   idx.className = 'q-idx';
   idx.textContent = `#${index}`;
 
   const status = document.createElement('span');
-  status.className = 'q-status';
-  status.textContent = STATUS_ICON[item.status] ?? '?';
+  status.className = 'q-state';
   status.title = STATUS_TEXT[item.status] ?? '';
+  const statusDot = document.createElement('i');
+  const statusText = document.createElement('span');
+  statusText.textContent = STATUS_LABEL[item.status] ?? '?';
+  status.append(statusDot, statusText);
 
-  const url = document.createElement('span');
-  url.className = 'q-url';
-  url.textContent = item.note ?? item.url;
-  url.title = item.note ? `${item.note}\n${item.url}` : item.url;
+  const main = document.createElement('span');
+  main.className = 'q-main';
+  if (item.note) {
+    const name = document.createElement('span');
+    name.className = 'q-name';
+    name.textContent = item.note;
+    name.title = `${item.note}\n${item.url}`;
+    const url = document.createElement('span');
+    url.className = 'q-url';
+    url.textContent = item.url || '（无地址 · 待绑定）';
+    main.append(name, url);
+  } else {
+    const url = document.createElement('span');
+    url.className = 'q-url';
+    url.textContent = item.url || '（无地址 · 待绑定）';
+    url.title = item.url ?? '';
+    main.appendChild(url);
+  }
 
   const meta = document.createElement('span');
   meta.className = 'q-meta';
@@ -348,6 +680,7 @@ function queueRow(item, index) {
   actions.className = 'q-actions';
 
   const noteBtn = document.createElement('button');
+  noteBtn.className = 'btn sm';
   noteBtn.textContent = '备注';
   noteBtn.title = '给这个任务起个名字（会用作目录名和下载文件名）';
   noteBtn.addEventListener('click', () => editNote(item));
@@ -355,13 +688,16 @@ function queueRow(item, index) {
 
   if ((item.status === 'done' || item.status === 'failed' || item.status === 'interrupted') && item.outputPath) {
     const link = document.createElement('a');
+    link.className = 'btn sm dl';
     link.href = `/api/download?job=${encodeURIComponent(item.id)}`;
     link.textContent = '下载';
     link.setAttribute('download', '');
     actions.appendChild(link);
 
     const clean = document.createElement('button');
+    clean.className = 'btn sm';
     clean.textContent = '清理';
+    clean.title = '删除分片目录，保留成品';
     clean.addEventListener('click', () => cleanup(item));
     actions.appendChild(clean);
   }
@@ -370,14 +706,14 @@ function queueRow(item, index) {
   if (item.status === 'interrupted' || item.status === 'failed' || item.status === 'cancelled') {
     if (!item.url) {
       const bind = document.createElement('button');
-      bind.className = 'primary small';
+      bind.className = 'btn sm primary';
       bind.textContent = '绑定链接';
       bind.title = '磁盘恢复的任务没有记录原始地址，填入后才能续传';
       bind.addEventListener('click', () => bindUrl(item));
       actions.appendChild(bind);
     } else {
       const resume = document.createElement('button');
-      resume.className = 'primary small';
+      resume.className = 'btn sm primary';
       resume.textContent = '继续';
       resume.title = '只补缺失的分片，已下载的不会重下';
       resume.addEventListener('click', () => retryItem(item));
@@ -387,19 +723,23 @@ function queueRow(item, index) {
 
   if (item.status !== 'running') {
     const remove = document.createElement('button');
+    remove.className = 'btn sm ghost';
     remove.textContent = '移除';
+    remove.title = '仅从队列移除，不影响已下载的文件';
     remove.addEventListener('click', () => removeItem(item.id));
     actions.appendChild(remove);
   }
 
-  el.append(idx, status, url, meta, actions);
+  el.append(idx, status, main, meta, actions);
   return el;
 }
 
 function renderQueue() {
-  const finished = queue.filter((i) => i.status === 'done' || i.status === 'failed' || i.status === 'cancelled').length;
+  const done = queue.filter((i) => i.status === 'done').length;
+  const broken = queue.filter((i) => i.status === 'interrupted' || i.status === 'failed').length;
   $('queuecount').textContent = `${queue.length} / ${maxQueue}`;
-  $('queuesummary').textContent = finished > 0 ? `${finished} 已完成` : '';
+  $('queuesummary').textContent =
+    (done > 0 ? `${done} 完成` : '') + (broken > 0 ? `${done > 0 ? ' · ' : ''}${broken} 待续传` : '');
 
   listEl.innerHTML = '';
   if (queue.length === 0) {
@@ -413,7 +753,7 @@ function resultRow(item) {
   const complete = item.status === 'done';
   const interrupted = item.status === 'interrupted';
   const el = document.createElement('div');
-  el.className = `result-row ${complete ? 'ok' : item.status === 'failed' ? 'bad' : 'warn'}`;
+  el.className = `row result-row ${complete ? 'ok' : item.status === 'failed' ? 'bad' : 'warn'}`;
 
   const icon = document.createElement('span');
   icon.className = 'r-icon';
@@ -459,13 +799,13 @@ function resultRow(item) {
   if (item.status === 'failed' || item.status === 'cancelled' || interrupted) {
     if (!item.url) {
       const bind = document.createElement('button');
-      bind.className = 'primary small';
+      bind.className = 'btn sm primary';
       bind.textContent = '绑定链接';
       bind.addEventListener('click', () => bindUrl(item));
       actions.appendChild(bind);
     } else {
       const retry = document.createElement('button');
-      retry.className = 'primary small';
+      retry.className = 'btn sm primary';
       retry.textContent = interrupted ? '继续下载' : '补齐缺失';
       retry.addEventListener('click', () => retryItem(item));
       actions.appendChild(retry);
@@ -474,6 +814,7 @@ function resultRow(item) {
 
   if (item.outputPath) {
     const link = document.createElement('a');
+    link.className = 'btn sm dl';
     link.href = `/api/download?job=${encodeURIComponent(item.id)}`;
     link.textContent = '下载';
     link.setAttribute('download', '');
@@ -481,6 +822,7 @@ function resultRow(item) {
   }
 
   const remove = document.createElement('button');
+  remove.className = 'btn sm ghost';
   remove.textContent = '移除';
   remove.title = '从列表中移除（不影响已下载的文件）';
   remove.addEventListener('click', () => removeItem(item.id));
@@ -493,10 +835,7 @@ function resultRow(item) {
 function renderResults() {
   const finished = queue.filter(
     (i) =>
-      i.status === 'done' ||
-      i.status === 'failed' ||
-      i.status === 'cancelled' ||
-      i.status === 'interrupted',
+      i.status === 'done' || i.status === 'failed' || i.status === 'cancelled' || i.status === 'interrupted',
   );
   const box = $('results');
 
@@ -553,11 +892,8 @@ function applyQueue(snap) {
     const interrupted = queue.filter((i) => i.status === 'interrupted');
     if (interrupted.length > 0) {
       recoveredAnnounced = true;
-      banner(
-        '发现中断的任务',
-        `${interrupted.length} 个`,
-        '磁盘上的分片还在，点「继续」只补缺失部分',
-      );
+      banner('发现中断的任务', `${interrupted.length} 个`, '磁盘上的分片还在，点「继续」只补缺失部分');
+      toast(`发现 ${interrupted.length} 个中断任务，可继续下载`, 'warn', 6000);
     }
   }
 
@@ -596,8 +932,7 @@ function printSummary(summary) {
           : item.status === 'interrupted'
             ? '⏸'
             : '⊘';
-    const cls =
-      item.status === 'done' ? 'ok' : item.status === 'failed' ? 'err' : 'warn';
+    const cls = item.status === 'done' ? 'ok' : item.status === 'failed' ? 'err' : 'warn';
     const meta =
       item.status === 'pending'
         ? '未执行'
@@ -719,6 +1054,7 @@ async function enqueue(startNow) {
   saveSettings();
   if (data.added > 0) {
     banner('已加入队列', `${data.added} 个`, `${body.speed}x`, label ? `备注 ${label}` : '');
+    toast(`已加入 ${data.added} 个任务`, 'ok');
     $('urls').value = '';
     $('note').value = '';
   }
@@ -748,9 +1084,14 @@ async function removeItem(id) {
 
 /** 给队列里的任务改名（备注名同时作为目录名与下载文件名） */
 async function editNote(item) {
-  const input = prompt('给这个任务起个名字：\n\n会用作目录名和下载的文件名', item.note ?? '');
-  if (input === null) return;
-  const label = input.trim();
+  const values = await askDialog({
+    title: '重命名任务',
+    message: '备注名会用作目录名和下载的文件名，中文与符号都支持。',
+    fields: [{ label: '备注', value: item.note ?? '', placeholder: '例：第 3 讲 网络协议' }],
+    confirmText: '保存',
+  });
+  if (!values) return;
+  const label = values[0];
   if (!label) return;
 
   const res = await fetch('/api/queue/note', {
@@ -766,21 +1107,38 @@ async function editNote(item) {
   }
 
   const hint =
-    item.status === 'running' ? '任务结束后重命名目录' : item.status === 'pending' ? '目录名已更新' : '目录已重命名';
+    item.status === 'running'
+      ? '任务结束后重命名目录'
+      : item.status === 'pending'
+        ? '目录名已更新'
+        : '目录已重命名';
   banner('备注已更新', data.note ?? label, hint);
+  toast(`备注已更新为「${data.note ?? label}」`, 'ok');
   void loadFiles();
 }
 
 async function cleanup(item) {
-  if (!confirm(`删除 ${item.taskName} 的分片目录？\n\n成品保留，但删除后无法续传。`)) return;
+  const ok = await askDialog({
+    title: '清理分片目录',
+    message: `将删除 ${item.taskName} 的分片目录。\n\n成品会保留，但删除后无法再续传。`,
+    confirmText: '清理',
+    danger: true,
+  });
+  if (!ok) return;
+
   const res = await fetch('/api/cleanup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ job: item.id }),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.ok) banner('分片已清理', `释放 ${(data.freedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`);
-  else note(`清理失败：${data.error || res.status}`);
+  if (res.ok) {
+    banner('分片已清理', `释放 ${(data.freedBytes / 1024 / 1024 / 1024).toFixed(2)} GB`);
+    toast(`分片已清理，${fmtSize(data.freedBytes)} 已释放`, 'ok');
+    void loadFiles();
+  } else {
+    note(`清理失败：${data.error || res.status}`);
+  }
 }
 
 $('enqueue').addEventListener('click', () => enqueue(false));
@@ -797,9 +1155,16 @@ $('pause').addEventListener('click', async () => {
 });
 
 $('stop').addEventListener('click', async () => {
-  if (!confirm('停止队列？\n\n当前任务会被取消，尚未开始的任务保留在队列里。')) return;
+  const ok = await askDialog({
+    title: '停止队列',
+    message: '当前任务会被取消，尚未开始的任务会保留在队列里。',
+    confirmText: '停止',
+    danger: true,
+  });
+  if (!ok) return;
   await fetch('/api/queue/stop', { method: 'POST' });
   banner('已请求停止队列');
+  toast('已请求停止队列', 'warn');
 });
 
 async function retryItem(item) {
@@ -814,18 +1179,26 @@ async function retryItem(item) {
     return;
   }
   banner('已加入补齐队列', item.note ?? item.url);
+  toast('已加入补齐队列', 'ok');
   await fetch('/api/queue/start', { method: 'POST' });
 }
 
 /** 给磁盘恢复出来、但没有原始链接的老任务补地址 */
 async function bindUrl(item) {
-  const input = prompt(
-    `「${item.note ?? item.taskName}」是从磁盘恢复的，没有记录原始播放列表地址。\n\n` +
-      `请粘贴它对应的 m3u8 地址（用来续传缺失分片）：`,
-    item.url || '',
-  );
-  if (input === null) return;
-  const value = input.trim();
+  const values = await askDialog({
+    title: '绑定播放列表地址',
+    message: `「${item.note ?? item.taskName}」是从磁盘恢复的，没有记录原始播放列表地址。\n绑定后才能续传缺失分片。`,
+    fields: [
+      {
+        label: 'm3u8 地址',
+        value: item.url || '',
+        placeholder: 'https://…/index.m3u8',
+      },
+    ],
+    confirmText: '绑定',
+  });
+  if (!values) return;
+  const value = values[0];
   if (!value) return;
 
   const res = await fetch('/api/queue/attach', {
@@ -839,6 +1212,7 @@ async function bindUrl(item) {
     return;
   }
   banner('链接已绑定', item.note ?? item.taskName);
+  toast('链接已绑定，可以点「继续」了', 'ok');
   if (data.queue) applyQueue(data.queue);
 }
 
@@ -853,6 +1227,7 @@ async function rescanDisk() {
   if (data.queue) applyQueue(data.queue);
   if (data.adopted > 0) {
     banner('已从磁盘恢复', `${data.adopted} 个任务`, data.refreshed ? `${data.refreshed} 个已刷新` : '');
+    toast(`已从磁盘恢复 ${data.adopted} 个任务`, 'ok');
   } else if (data.refreshed > 0) {
     note(`已刷新 ${data.refreshed} 个任务的磁盘状态`);
   } else {
@@ -866,6 +1241,7 @@ $('retryall').addEventListener('click', async () => {
   const data = await res.json().catch(() => ({}));
   if (data.retried) {
     banner('已加入补齐队列', `${data.retried} 个任务`);
+    toast(`${data.retried} 个任务已加入补齐队列`, 'ok');
     await fetch('/api/queue/start', { method: 'POST' });
   }
 });
@@ -873,7 +1249,9 @@ $('retryall').addEventListener('click', async () => {
 async function clearFinished() {
   const res = await fetch('/api/queue/clear', { method: 'POST' });
   const data = await res.json().catch(() => ({}));
-  if (data.removed) note(`已清除 ${data.removed} 条已完成记录`);
+  if (data.removed) {
+    note(`已清除 ${data.removed} 条已完成记录`);
+  }
 }
 
 $('clear').addEventListener('click', clearFinished);
@@ -892,6 +1270,7 @@ for (const id of ['jitter', 'retries', 'out', 'urls']) $(id).addEventListener('c
 $('remux').addEventListener('change', saveSettings);
 
 document.addEventListener('keydown', (event) => {
+  if ($('dlg')?.open) return;
   if (event.key === 'Escape' && !$('stop').disabled) {
     event.preventDefault();
     $('stop').click();
@@ -903,13 +1282,28 @@ document.addEventListener('keydown', (event) => {
 
 /* ---------------- 事件流 ---------------- */
 
+function setConn(state, text) {
+  const el = $('conn');
+  if (!el) return;
+  el.dataset.state = state;
+  const label = el.querySelector('b');
+  if (label) label.textContent = text;
+}
+
 const events = new EventSource('/api/events');
+
+events.onopen = () => setConn('live', '已连接');
 
 events.onmessage = (message) => {
   let event;
   try {
     event = JSON.parse(message.data);
   } catch {
+    return;
+  }
+
+  if (event.type === 'ready') {
+    replaying = false;
     return;
   }
 
@@ -928,13 +1322,8 @@ events.onmessage = (message) => {
   switch (event.type) {
     case 'playlist':
       total = event.total;
-      fillEl.style.width = '0%';
-      $('pct').textContent = '0.0%';
+      resetProgress();
       $('count').textContent = `0/${event.total}`;
-      $('elapsed').textContent = '已用 —';
-      $('eta').textContent = '剩余 —';
-      $('size').textContent = '—';
-      $('retrynote').textContent = '';
       banner(
         `清单解析完成${jobId && queue.length > 1 ? ` · #${jobOrder.get(jobId) ?? '?'}` : ''}`,
         `${event.total} 片`,
@@ -960,22 +1349,25 @@ events.onmessage = (message) => {
       break;
 
     case 'error':
-      // 重试不刷屏，只在进度条右侧提示当前正在重试哪一片
+      // 重试不刷屏，只在进度条下方提示当前正在重试哪一片
       lastError.set(event.index, event.message);
       $('retrynote').textContent = `#${event.index} 第 ${event.attempt} 次重试`;
       break;
 
     case 'log':
-      note(event.message);
+      banner(event.message);
       break;
 
     case 'done':
       if (event.failed.length > 0) {
         banner('任务结束', `失败 ${event.failed.length} 片`, '未拼接');
+        toast(`任务结束，失败 ${event.failed.length} 片`, 'err', 6000);
       } else if (event.outputPath) {
         banner('任务完成', fmtDuration(event.elapsedMs), fmtSize(event.bytes), event.outputPath);
+        toast(`任务完成 · ${fmtSize(event.bytes)}`, 'ok', 5000);
       } else {
         banner('任务完成', fmtDuration(event.elapsedMs));
+        toast('任务完成', 'ok');
       }
       void loadFiles();
       break;
@@ -998,6 +1390,7 @@ events.onmessage = (message) => {
 };
 
 events.onerror = () => {
+  setConn('down', '重连中');
   // EventSource 自动重连
 };
 
@@ -1011,6 +1404,7 @@ if (saved.retries !== undefined) $('retries').value = saved.retries;
 if (saved.out !== undefined) $('out').value = saved.out;
 if (saved.remux !== undefined) $('remux').checked = Boolean(saved.remux);
 syncChips();
+drawSpark();
 
 fetch('/api/state')
   .then((r) => r.json())
@@ -1018,7 +1412,7 @@ fetch('/api/state')
     maxQueue = state.maxQueue ?? 20;
     if (state.running) {
       setState('运行中', 'run');
-      note('检测到队列正在运行，正在同步进度…');
+      banner('检测到队列正在运行，正在同步进度…');
     }
   })
   .catch(() => {});
