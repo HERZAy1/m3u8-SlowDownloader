@@ -135,6 +135,8 @@ export interface QueueItemSnapshot {
   durationSec: number | null;
   /** 按该任务倍速估算的耗时（毫秒），未知为 null */
   estimateMs: number | null;
+  /** 剩余分片按当前倍速还需要多久（毫秒），未知为 null */
+  remainingMs?: number | null;
   /** 按需下载的区间；undefined 表示整条视频 */
   range?: SegmentRange;
   /** 整条播放列表的分片数（按需下载时用于显示「第 a–b 片 / 共 N 片」） */

@@ -365,7 +365,10 @@ function updateQueueStats() {
     $('queuetotal').textContent = '';
     return;
   }
-  $('queuetotal').textContent = `总计 ${fmtDuration(stats.totalMs)} · 完成 ${stats.percent.toFixed(0)}%`;
+  const leftMs = Math.max(0, stats.totalMs - stats.doneMs);
+  $('queuetotal').textContent =
+    `总计 ${fmtDuration(stats.totalMs)} · 完成 ${stats.percent.toFixed(0)}%` +
+    (leftMs > 0 ? ` · 剩余约 ${fmtDuration(leftMs)}` : '');
 }
 
 /* ---------------- 文件管理 ---------------- */
@@ -620,7 +623,11 @@ function renderProgress(snap) {
   }
 
   const live = listEl.querySelector('.q-row.st-running .q-meta');
-  if (live) live.textContent = `${snap.completed}/${snap.total}`;
+  if (live) {
+    const left = Math.max(0, snap.total - snap.completed);
+    const eta = snap.speed > 0 && snap.total > 0 ? ` · ${fmtDuration(snap.etaMs)}` : '';
+    live.textContent = `${snap.completed}/${snap.total} · 剩余 ${left} 片${eta}`;
+  }
   updateQueueStats();
 }
 
@@ -630,22 +637,40 @@ function rangeLabel(item) {
   return item.range ? `第 ${item.range.start}–${item.range.end} 片` : '';
 }
 
+/** 队列行右侧的进度摘要：总数 / 已下 / 剩余片数 / 预计时间 */
 function metaText(item) {
+  const parts = [];
   const tag = rangeLabel(item);
-  if (item.status === 'pending') return tag ? `${tag} · ${item.total || '?'} 片` : '—';
-  if (item.status === 'running') return `${item.downloaded}/${item.total || '?'}${tag ? ` · ${tag}` : ''}`;
-  if (item.status === 'cancelled') return tag ? `已取消 · ${tag}` : '已取消';
-  if (item.status === 'interrupted') {
-    const totalN = item.total || '?';
-    const gap = item.failed.length > 0 ? `缺 ${item.failed.length} 片` : '待续传';
-    return `${item.downloaded}/${totalN} · ${gap}${tag ? ` · ${tag}` : ''}`;
+  if (tag) parts.push(tag);
+
+  const total = item.total || 0;
+  const left = Math.max(0, total - item.downloaded);
+
+  switch (item.status) {
+    case 'pending':
+      parts.push(total > 0 ? `共 ${total} 片` : '待探测');
+      if (item.remainingMs) parts.push(`预计 ${fmtDuration(item.remainingMs)}`);
+      break;
+    case 'running':
+      parts.push(`${item.downloaded}/${total || '?'}`);
+      if (left > 0) parts.push(`剩余 ${left} 片`);
+      if (item.remainingMs) parts.push(fmtDuration(item.remainingMs));
+      break;
+    case 'interrupted':
+      parts.push(`${item.downloaded}/${total || '?'}`);
+      if (left > 0) parts.push(`剩余 ${left} 片`);
+      if (item.remainingMs) parts.push(`预计 ${fmtDuration(item.remainingMs)}`);
+      break;
+    case 'failed':
+      parts.push(`${item.downloaded}/${total || '?'}`, `缺 ${item.failed.length} 片`);
+      break;
+    case 'cancelled':
+      parts.push('已取消');
+      break;
+    default:
+      parts.push(`${item.downloaded}/${total || '?'}`, fmtSize(item.bytes), fmtDuration(item.elapsedMs));
   }
-  if (item.status === 'failed') {
-    return `${item.downloaded}/${item.total} · 缺 ${item.failed.length} 片${tag ? ` · ${tag}` : ''}`;
-  }
-  return `${item.downloaded}/${item.total} · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}${
-    tag ? ` · ${tag}` : ''
-  }`;
+  return parts.join(' · ');
 }
 
 function queueRow(item, index) {
@@ -689,6 +714,45 @@ function queueRow(item, index) {
 
   const actions = document.createElement('span');
   actions.className = 'q-actions';
+
+  // 排序：上移 / 下移
+  if (item.status !== 'running' && item.status !== 'done') {
+    const up = document.createElement('button');
+    up.className = 'btn sm icon';
+    up.textContent = '↑';
+    up.title = '上移一位（更早下载）';
+    up.disabled = index <= 1;
+    up.addEventListener('click', () => moveItem(item, -1));
+
+    const down = document.createElement('button');
+    down.className = 'btn sm icon';
+    down.textContent = '↓';
+    down.title = '下移一位';
+    down.disabled = index >= queue.length;
+    down.addEventListener('click', () => moveItem(item, 1));
+
+    actions.append(up, down);
+  }
+
+  // 优先下载：挪到队首，必要时让当前任务先暂停
+  if (item.status === 'pending' || item.status === 'interrupted' || item.status === 'failed' || item.status === 'cancelled') {
+    const prio = document.createElement('button');
+    prio.className = 'btn sm';
+    prio.textContent = '优先';
+    prio.title = '排到队首立即下载；正在下载的任务会先暂停（进度保留）';
+    prio.addEventListener('click', () => prioritizeItem(item));
+    actions.appendChild(prio);
+  }
+
+  // 暂停让位：当前任务停下，先下后面的
+  if (item.status === 'running') {
+    const give = document.createElement('button');
+    give.className = 'btn sm';
+    give.textContent = '让位';
+    give.title = '暂停这个任务，先下其它任务；进度保留，之后点「继续」可以接着下';
+    give.addEventListener('click', () => yieldCurrent());
+    actions.appendChild(give);
+  }
 
   const noteBtn = document.createElement('button');
   noteBtn.className = 'btn sm';
@@ -748,9 +812,15 @@ function queueRow(item, index) {
 function renderQueue() {
   const done = queue.filter((i) => i.status === 'done').length;
   const broken = queue.filter((i) => i.status === 'interrupted' || i.status === 'failed').length;
+  const waiting = queue.filter((i) => i.status === 'pending').length;
   $('queuecount').textContent = `${queue.length} / ${maxQueue}`;
-  $('queuesummary').textContent =
-    (done > 0 ? `${done} 完成` : '') + (broken > 0 ? `${done > 0 ? ' · ' : ''}${broken} 待续传` : '');
+  $('queuesummary').textContent = [
+    waiting > 0 ? `${waiting} 待下载` : '',
+    done > 0 ? `${done} 完成` : '',
+    broken > 0 ? `${broken} 待续传` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   listEl.innerHTML = '';
   if (queue.length === 0) {
@@ -1245,6 +1315,48 @@ async function removeItem(id) {
     const data = await res.json().catch(() => ({}));
     note(`移除失败：${data.error || res.status}`);
   }
+}
+
+/** 上移 / 下移一位 */
+async function moveItem(item, delta) {
+  const res = await fetch('/api/queue/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: item.id, delta }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    note(`调整顺序失败：${data.error || res.status}`);
+    return;
+  }
+  if (data.queue) applyQueue(data.queue);
+}
+
+/** 排到队首立即下载；正在跑的任务会先让位 */
+async function prioritizeItem(item) {
+  const res = await fetch('/api/queue/prioritize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: item.id }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    note(`优先失败：${data.error || res.status}`);
+    return;
+  }
+  if (data.queue) applyQueue(data.queue);
+  toast(data.yielded ? '已暂停当前任务，优先下载这个' : '已排到队首，开始下载', 'ok');
+}
+
+/** 暂停当前任务，让后面的先跑 */
+async function yieldCurrent() {
+  const res = await fetch('/api/queue/yield', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    note(`暂停失败：${data.error || res.status}`);
+    return;
+  }
+  toast('当前任务已暂停，正在切到下一个', 'warn');
 }
 
 /** 给队列里的任务改名（备注名同时作为目录名与下载文件名） */

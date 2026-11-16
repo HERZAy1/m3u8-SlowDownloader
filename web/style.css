@@ -548,6 +548,13 @@ button {
   gap: 5px;
 }
 
+.btn.sm.icon {
+  width: 24px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
 .btn.danger {
   color: #ffb4b4;
   border-color: rgba(255, 107, 107, 0.35);

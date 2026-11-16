@@ -135,6 +135,8 @@ export class DownloadQueue {
   private loopRunning = false;
   private stopped = false;
   private paused = false;
+  /** 被用户「暂停让位」的任务 id：它的取消不算失败/取消，而是「已中断」 */
+  private yieldingId: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistInFlight = false;
   private persistQueued = false;
@@ -684,6 +686,71 @@ export class DownloadQueue {
     return { ok: true };
   }
 
+  /** 上移 / 下移一位（delta = -1 / +1）。运行中的项本身不动，但允许别的项越过它。 */
+  move(id: string, delta: number): { ok: boolean; error?: string } {
+    const index = this.items.findIndex((i) => i.id === id);
+    if (index < 0) return { ok: false, error: '没有这个任务' };
+    if (this.items[index].status === 'running') {
+      return { ok: false, error: '正在下载的任务不能移动，可以点「暂停让位」' };
+    }
+    const target = index + (delta > 0 ? 1 : -1);
+    if (target < 0 || target >= this.items.length) {
+      return { ok: false, error: delta > 0 ? '已经在队尾了' : '已经在队首了' };
+    }
+    const [item] = this.items.splice(index, 1);
+    this.items.splice(target, 0, item as QueueItem);
+    this.publish();
+    return { ok: true };
+  }
+
+  /**
+   * 优先下载：把这条挪到队首；如果有别的任务正在下载，让它「暂停让位」，
+   * 队列随即开始这条。被让位的任务变成「已中断」，之后点「继续」还能接着下。
+   */
+  prioritize(id: string): { ok: boolean; error?: string; yielded?: boolean } {
+    const item = this.items.find((i) => i.id === id);
+    if (!item) return { ok: false, error: '没有这个任务' };
+    if (item.status === 'running') return { ok: false, error: '这个任务已经在下载了' };
+    if (item.status === 'done') return { ok: false, error: '这个任务已经完成' };
+    if (!item.url) return { ok: false, error: '缺少播放列表地址，请先绑定链接' };
+
+    if (item.status !== 'pending') {
+      this.reset(item, true);
+    }
+
+    const running = this.items.find((i) => i.status === 'running');
+    const index = this.items.indexOf(item);
+    this.items.splice(index, 1);
+    this.items.unshift(item);
+
+    let yielded = false;
+    if (running && running !== item && this.current) {
+      this.yieldingId = running.id;
+      this.current.cancel();
+      yielded = true;
+    }
+    this.publish();
+
+    // 队列闲着就直接开跑，用户点「优先」的预期是"现在就下这个"
+    if (!this.loopRunning) {
+      void this.start().catch(() => {
+        /* 队列异常会通过事件流报出来 */
+      });
+    }
+
+    return { ok: true, yielded };
+  }
+
+  /** 暂停当前任务并让后面的任务先跑（当前任务变成「已中断」，可继续） */
+  yieldCurrent(): { ok: boolean; error?: string } {
+    const running = this.items.find((i) => i.status === 'running');
+    if (!running || !this.current) return { ok: false, error: '当前没有正在下载的任务' };
+    this.yieldingId = running.id;
+    this.current.cancel();
+    this.publish();
+    return { ok: true };
+  }
+
   clearFinished(): number {
     const before = this.items.length;
     this.items = this.items.filter(
@@ -808,7 +875,24 @@ export class DownloadQueue {
     });
 
     this.current = task;
-    task.on((event: TaskEvent) => this.emit({ ...event, jobId: item.id }));
+
+    // 任务没跑完（取消 / 让位）时 result 拿不到，用最后一次进度事件里的计数兜底，
+    // 否则队列行会显示成 0/300，看起来像一片都没下。
+    let liveCompleted = 0;
+    let liveTotal = 0;
+    let liveBytes = 0;
+    task.on((event: TaskEvent) => {
+      if (event.type === 'progress') {
+        liveCompleted = event.snapshot.completed;
+        liveTotal = event.snapshot.total;
+        liveBytes = event.snapshot.bytes;
+        // 同步到队列项：/api/queue 与「让位」后的统计都能拿到真实进度
+        item.downloaded = liveCompleted;
+        if (liveTotal > 0) item.total = liveTotal;
+        item.bytes = liveBytes;
+      }
+      this.emit({ ...event, jobId: item.id });
+    });
 
     try {
       const result = await task.run();
@@ -822,8 +906,19 @@ export class DownloadQueue {
       if (result.range) item.params.range = result.range;
       item.status = result.failed.length > 0 ? 'failed' : 'done';
     } catch (err) {
-      item.status = this.stopped ? 'cancelled' : 'failed';
-      item.error = err instanceof Error ? err.message : String(err);
+      item.downloaded = Math.max(item.downloaded, liveCompleted);
+      if (liveTotal > 0) item.total = liveTotal;
+      if (liveBytes > 0) item.bytes = liveBytes;
+      if (this.yieldingId === item.id) {
+        // 用户点了「暂停让位」：不算失败，保留进度等会儿继续
+        item.status = 'interrupted';
+        item.error = '已暂停，点「继续」可以接着下';
+      } else {
+        item.status = this.stopped ? 'cancelled' : 'failed';
+        item.error = err instanceof Error ? err.message : String(err);
+      }
+    } finally {
+      if (this.yieldingId === item.id) this.yieldingId = null;
     }
 
     item.finishedAt = Date.now();
@@ -912,6 +1007,12 @@ function toSnapshot(item: QueueItem): QueueItemSnapshot {
       item.durationSec !== null
         ? (item.durationSec * 1000) / Math.max(0.1, item.params.speed)
         : null,
+    remainingMs: (() => {
+      if (item.durationSec === null) return null;
+      const total = item.total;
+      const left = total > 0 ? Math.max(0, total - item.downloaded) / total : 1;
+      return (item.durationSec * 1000 * left) / Math.max(0.1, item.params.speed);
+    })(),
     error: item.error,
     addedAt: item.addedAt,
     startedAt: item.startedAt,

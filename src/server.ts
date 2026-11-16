@@ -349,6 +349,41 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
         return;
       }
 
+      // 调整顺序：delta = -1 上移，+1 下移
+      if (path === '/api/queue/move' && req.method === 'POST') {
+        const body = await readJson(req);
+        const id = String(body.id ?? '');
+        const delta = Number(body.delta ?? 0) >= 0 ? 1 : -1;
+        const result = queue.move(id, delta);
+        json(
+          res,
+          result.ok ? 200 : 409,
+          result.ok ? { ok: true, queue: queue.snapshot() } : { error: result.error ?? '无法移动' },
+        );
+        return;
+      }
+
+      // 优先下载：挪到队首，必要时让当前任务「暂停让位」
+      if (path === '/api/queue/prioritize' && req.method === 'POST') {
+        const body = await readJson(req);
+        const result = queue.prioritize(String(body.id ?? ''));
+        json(
+          res,
+          result.ok ? 200 : 409,
+          result.ok
+            ? { ok: true, yielded: Boolean(result.yielded), queue: queue.snapshot() }
+            : { error: result.error ?? '无法优先此任务' },
+        );
+        return;
+      }
+
+      // 暂停当前任务，让后面的先跑（当前任务变成「已中断」，可继续）
+      if (path === '/api/queue/yield' && req.method === 'POST') {
+        const result = queue.yieldCurrent();
+        json(res, result.ok ? 200 : 409, result.ok ? { ok: true } : { error: result.error ?? '没有正在下载的任务' });
+        return;
+      }
+
       /* ---------- 任务控制 ---------- */
 
       if (path === '/api/control' && req.method === 'POST') {
