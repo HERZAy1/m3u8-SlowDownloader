@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/banner.svg" alt="m3u8 Downloader — 像播放器一样把视频下载下来" width="100%">
+<img src="docs/images/hero.svg" alt="m3u8 Downloader — 像播放器一样把视频下载下来" width="100%">
 
 **像播放器一样把 m3u8 下载下来** —— 按 `#EXTINF` 的节奏逐片请求，视频多长就下多久（默认 2 倍速），不触发服务端的过流风控。
 
