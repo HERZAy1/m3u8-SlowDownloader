@@ -5,8 +5,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanTaskDir } from './files.ts';
+import { CHROME_HEADERS } from './headers.ts';
+import { FetchHttpClient } from './http.ts';
+import { parsePlaylist } from './playlist.ts';
 import { DownloadQueue } from './queue.ts';
-import type { ServerEvent, TaskFileInfo } from './types.ts';
+import type { SegmentRange, ServerEvent, TaskFileInfo } from './types.ts';
 
 const WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 const PORT = Number(process.env.PORT ?? 7788);
@@ -88,12 +91,26 @@ function urlsFrom(body: Record<string, unknown>): string[] {
   return [];
 }
 
+/** 把前端传来的区间清洗成 {start,end}；非法就返回 undefined */
+function rangeFrom(value: unknown): SegmentRange | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  const start = Number(raw.start);
+  const end = Number(raw.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined;
+  const a = Math.trunc(start);
+  const b = Math.trunc(end);
+  if (a < 1 || b < a) return undefined;
+  return { start: a, end: b };
+}
+
 function paramsFrom(body: Record<string, unknown>) {
   return {
     speed: Number(body.speed ?? 2),
     jitterMs: Number(body.jitter ?? 300),
     retries: Number(body.retries ?? 3),
     limit: body.limit ? Number(body.limit) : undefined,
+    range: rangeFrom(body.range),
     outDir:
       typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : undefined,
     remux: Boolean(body.remux),
@@ -210,6 +227,32 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
         return;
       }
 
+      /* ---------- 播放列表探测 ---------- */
+
+      // 按需下载前先问一句：这条播放列表一共多少片？（只读清单，不下载分片）
+      if (path === '/api/probe' && req.method === 'POST') {
+        const body = await readJson(req);
+        const target = String(body.url ?? '').trim();
+        if (!target) {
+          json(res, 400, { error: '缺少播放列表地址' });
+          return;
+        }
+        try {
+          const client = new FetchHttpClient({ ...CHROME_HEADERS }, 20_000);
+          const text = (await client.get(target)).toString('utf8');
+          const playlist = parsePlaylist(text, target);
+          json(res, 200, {
+            total: playlist.segments.length,
+            totalDuration: playlist.totalDuration,
+            discontinuities: playlist.discontinuityCount,
+            isVod: playlist.isVod,
+          });
+        } catch (err) {
+          json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
       /* ---------- 队列 ---------- */
 
       if (path === '/api/queue' && req.method === 'GET') {
@@ -223,6 +266,16 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
         if (urls.length === 0) {
           json(res, 400, { error: '缺少播放列表地址' });
           return;
+        }
+        if (body.range !== undefined && body.range !== null) {
+          if (!rangeFrom(body.range)) {
+            json(res, 400, { error: '下载区间不合法：需要 1 ≤ 起始 ≤ 结束' });
+            return;
+          }
+          if (urls.length > 1) {
+            json(res, 400, { error: '按需下载一次只能添加一个链接' });
+            return;
+          }
         }
         const result = await queue.add(urls, paramsFrom(body));
         json(res, 200, { ...result, queue: queue.snapshot() });

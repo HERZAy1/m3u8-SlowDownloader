@@ -5,6 +5,7 @@ m3u8-downloader-task.md
 downloads/
 tmp-*/
 tests/.work/
+tests/.work-range/
 
 # 队列存档（断电恢复用）
 state/

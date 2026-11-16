@@ -33,33 +33,55 @@ export async function scanTaskDirDeep(dir: string): Promise<DiskScan | null> {
   if (!info || !info.isDirectory()) return null;
 
   const state = await readStateFile(dir);
+  const range = state?.range;
 
-  let total = typeof state?.total === 'number' ? state.total : 0;
+  /** 该任务应该覆盖的分片序号区间（按需下载时不是从 1 开始） */
+  let from = 1;
+  let to = typeof state?.total === 'number' ? state.total : 0;
   let durationSec: number | null = null;
 
   const playlistText = await readFile(join(dir, 'playlist.m3u8'), 'utf8').catch(() => null);
   if (playlistText) {
     try {
       const playlist = parsePlaylist(playlistText, state?.url || PLACEHOLDER_BASE);
-      total = playlist.segments.length;
-      durationSec = playlist.totalDuration;
+      const all = playlist.segments;
+      if (range) {
+        from = Math.max(1, Math.min(range.start, all.length));
+        to = Math.max(from, Math.min(range.end, all.length));
+        durationSec = all.slice(from - 1, to).reduce((sum, seg) => sum + seg.duration, 0);
+      } else {
+        from = 1;
+        to = all.length;
+        durationSec = playlist.totalDuration;
+      }
     } catch {
-      /* 清单损坏就退回 state.json 里的分片数 */
+      /* 清单损坏就退回 state.json 里的分片数与区间 */
+      if (range) {
+        from = range.start;
+        to = range.end;
+      }
     }
+  } else if (range) {
+    from = range.start;
+    to = range.end;
   }
 
+  const total = Math.max(0, to - from + 1);
   const names = new Set<string>();
   const entries = await readdir(join(dir, 'segments'), { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (entry.isFile() && entry.name.endsWith('.ts')) names.add(entry.name);
   }
 
-  const present = names.size;
+  let present = 0;
   const missing: number[] = [];
   if (total > 0) {
-    for (let i = 1; i <= total; i += 1) {
-      if (!names.has(`${String(i).padStart(4, '0')}.ts`)) missing.push(i);
+    for (let i = from; i <= to; i += 1) {
+      if (names.has(`${String(i).padStart(4, '0')}.ts`)) present += 1;
+      else missing.push(i);
     }
+  } else {
+    present = names.size;
   }
 
   const output = await stat(join(dir, 'output.ts')).catch(() => null);

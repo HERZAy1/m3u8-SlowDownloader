@@ -710,6 +710,51 @@ kbd {
   padding: 4px 18px 18px;
 }
 
+.box-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.box-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.box-check:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.box-check.on {
+  border-color: rgba(107, 140, 255, 0.6);
+  background: rgba(107, 140, 255, 0.13);
+  color: #cdd9ff;
+}
+
+.adv-note {
+  margin: -6px 18px 16px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(107, 140, 255, 0.22);
+  background: rgba(107, 140, 255, 0.09);
+  color: #a9bbff;
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
 /* ---------------- 控制台 ---------------- */
 
 .console .panel-head {

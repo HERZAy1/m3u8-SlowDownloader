@@ -19,6 +19,12 @@ export interface Playlist {
   discontinuityCount: number;
 }
 
+/** 只下载播放列表中的一段（1-based，含首含尾）。 */
+export interface SegmentRange {
+  start: number;
+  end: number;
+}
+
 export interface HttpRequestOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
@@ -76,7 +82,17 @@ export interface ProgressSnapshot {
 
 export type TaskEvent =
   | { type: 'phase'; phase: TaskPhase }
-  | { type: 'playlist'; total: number; totalDuration: number; discontinuities: number; isVod: boolean }
+  | {
+      type: 'playlist';
+      total: number;
+      totalDuration: number;
+      discontinuities: number;
+      isVod: boolean;
+      /** 按需下载时的区间（未设置表示整条） */
+      range?: SegmentRange;
+      /** 整条播放列表的分片总数，便于界面显示「第 200–300 片 / 共 1074 片」 */
+      playlistTotal?: number;
+    }
   | { type: 'progress'; snapshot: ProgressSnapshot }
   | {
       type: 'segment';
@@ -119,6 +135,10 @@ export interface QueueItemSnapshot {
   durationSec: number | null;
   /** 按该任务倍速估算的耗时（毫秒），未知为 null */
   estimateMs: number | null;
+  /** 按需下载的区间；undefined 表示整条视频 */
+  range?: SegmentRange;
+  /** 整条播放列表的分片数（按需下载时用于显示「第 a–b 片 / 共 N 片」） */
+  playlistTotal?: number;
   error?: string;
   addedAt: number;
   startedAt?: number;

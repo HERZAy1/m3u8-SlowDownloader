@@ -181,9 +181,11 @@ function askDialog(opts) {
     cap.textContent = field.label ?? '';
 
     const input = document.createElement('input');
-    input.type = 'text';
+    input.type = field.type ?? 'text';
     input.value = field.value ?? '';
     if (field.placeholder) input.placeholder = field.placeholder;
+    if (field.min !== undefined) input.min = String(field.min);
+    if (field.max !== undefined) input.max = String(field.max);
     input.autocomplete = 'off';
     input.spellcheck = false;
 
@@ -624,17 +626,26 @@ function renderProgress(snap) {
 
 /* ---------------- 队列渲染 ---------------- */
 
+function rangeLabel(item) {
+  return item.range ? `第 ${item.range.start}–${item.range.end} 片` : '';
+}
+
 function metaText(item) {
-  if (item.status === 'pending') return '—';
-  if (item.status === 'running') return `${item.downloaded}/${item.total || '?'}`;
-  if (item.status === 'cancelled') return '已取消';
+  const tag = rangeLabel(item);
+  if (item.status === 'pending') return tag ? `${tag} · ${item.total || '?'} 片` : '—';
+  if (item.status === 'running') return `${item.downloaded}/${item.total || '?'}${tag ? ` · ${tag}` : ''}`;
+  if (item.status === 'cancelled') return tag ? `已取消 · ${tag}` : '已取消';
   if (item.status === 'interrupted') {
     const totalN = item.total || '?';
     const gap = item.failed.length > 0 ? `缺 ${item.failed.length} 片` : '待续传';
-    return `${item.downloaded}/${totalN} · ${gap}`;
+    return `${item.downloaded}/${totalN} · ${gap}${tag ? ` · ${tag}` : ''}`;
   }
-  if (item.status === 'failed') return `${item.downloaded}/${item.total} · 缺 ${item.failed.length} 片`;
-  return `${item.downloaded}/${item.total} · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}`;
+  if (item.status === 'failed') {
+    return `${item.downloaded}/${item.total} · 缺 ${item.failed.length} 片${tag ? ` · ${tag}` : ''}`;
+  }
+  return `${item.downloaded}/${item.total} · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}${
+    tag ? ` · ${tag}` : ''
+  }`;
 }
 
 function queueRow(item, index) {
@@ -771,7 +782,9 @@ function resultRow(item) {
   if (complete) {
     const noteEl = document.createElement('span');
     noteEl.className = 'r-note';
-    noteEl.textContent = `完整 · ${item.total} 片 · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}`;
+    noteEl.textContent =
+      `${item.range ? `第 ${item.range.start}–${item.range.end} 片 · ` : ''}` +
+      `完整 · ${item.total} 片 · ${fmtSize(item.bytes)} · ${fmtDuration(item.elapsedMs)}`;
     body.appendChild(noteEl);
   } else if (item.status === 'failed' || interrupted) {
     const miss = document.createElement('span');
@@ -876,7 +889,7 @@ function updateButtons() {
   $('clear').disabled = !hasFinished;
   $('pause').textContent = queuePaused ? '继续' : '暂停';
 
-  for (const id of ['speed', 'jitter', 'retries', 'limit', 'out', 'remux']) $(id).disabled = running;
+  for (const id of ['speed', 'jitter', 'retries', 'out', 'remux', 'ondemand']) $(id).disabled = running;
   for (const chip of document.querySelectorAll('#speedchips button')) chip.disabled = running;
 }
 
@@ -989,6 +1002,7 @@ function saveSettings() {
         retries: $('retries').value,
         out: $('out').value,
         remux: $('remux').checked,
+        ondemand: $('ondemand').checked,
       }),
     );
   } catch {
@@ -1025,13 +1039,15 @@ function shortPath(value) {
 function updateAdvSummary() {
   const jitter = $('jitter').value.trim() || '0';
   const retries = $('retries').value.trim() || '0';
-  const limit = $('limit').value.trim();
+  const ondemand = $('ondemand').checked;
   $('advsummary').textContent = [
+    ondemand ? '按需下载' : '整片下载',
     `抖动 ${jitter}ms`,
     `重试 ${retries} 次`,
-    limit ? `只下前 ${limit} 片` : '下载全部',
     shortPath($('out').value.trim()),
   ].join(' · ');
+  $('ondemandbox').classList.toggle('on', ondemand);
+  $('ondemandnote').hidden = !ondemand;
 }
 
 function setAdvOpen(open, persist = true) {
@@ -1047,8 +1063,97 @@ function setAdvOpen(open, persist = true) {
 
 $('advtoggle').addEventListener('click', () => setAdvOpen(advEl.dataset.open !== 'true'));
 
-for (const id of ['jitter', 'retries', 'limit', 'out']) {
+for (const id of ['jitter', 'retries', 'out']) {
   $(id).addEventListener('input', updateAdvSummary);
+}
+
+$('ondemand').addEventListener('change', () => {
+  updateAdvSummary();
+  saveSettings();
+});
+
+/* ---------------- 按需下载 ---------------- */
+
+const RANGE_KEY = 'm3u8dl.range';
+
+function lastRange() {
+  try {
+    const matched = /^(\d+)-(\d+)$/.exec(localStorage.getItem(RANGE_KEY) ?? '');
+    if (!matched) return null;
+    return { start: Number(matched[1]), end: Number(matched[2]) };
+  } catch {
+    return null;
+  }
+}
+
+/** 先读一遍播放列表，拿到总片数（不下载任何分片） */
+async function probePlaylist(url) {
+  $('enqueue').disabled = true;
+  $('start').disabled = true;
+  toast('正在读取播放列表，稍等…', 'info', 2400);
+  try {
+    const res = await fetch('/api/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      note(`读取播放列表失败：${data.error || res.status}`);
+      return null;
+    }
+    return data;
+  } catch (err) {
+    note(`读取播放列表失败：${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  } finally {
+    updateButtons();
+  }
+}
+
+/** 让用户填写区间；非法就提示后重填，取消返回 null */
+async function askRange(total) {
+  const last = lastRange();
+  let defStart = 1;
+  let defEnd = total;
+  if (last && last.start >= 1 && last.start <= total) {
+    defStart = last.start;
+    defEnd = Math.min(Math.max(last.end, defStart), total);
+  }
+
+  for (;;) {
+    const values = await askDialog({
+      title: '选择下载区间',
+      message: `这条播放列表共 ${total} 片。\n只下载区间内的分片（含首尾），例如 200 ~ 300。`,
+      fields: [
+        { label: `起始片（1 – ${total}）`, value: String(defStart), type: 'number', min: 1, max: total },
+        { label: `结束片（1 – ${total}）`, value: String(defEnd), type: 'number', min: 1, max: total },
+      ],
+      confirmText: '确定',
+    });
+    if (!values) return null;
+
+    const start = Number(values[0]);
+    const end = Number(values[1]);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      toast('请填写整数片号', 'err');
+      continue;
+    }
+    if (start < 1 || end > total || start > end) {
+      toast(`区间无效：需要 1 ≤ 起始 ≤ 结束 ≤ ${total}`, 'err');
+      defStart = start >= 1 && start <= total ? start : defStart;
+      defEnd = end >= 1 && end <= total ? end : defEnd;
+      continue;
+    }
+
+    try {
+      localStorage.setItem(RANGE_KEY, `${start}-${end}`);
+    } catch {
+      /* 隐私模式下忽略 */
+    }
+    toast(`已选择第 ${start}–${end} 片，共 ${end - start + 1} 片`, 'ok');
+    return { start, end };
+  }
 }
 
 /* ---------------- 操作 ---------------- */
@@ -1065,6 +1170,13 @@ async function enqueue(startNow) {
     return;
   }
 
+  const ondemand = $('ondemand').checked;
+  if (ondemand && urls.length > 1) {
+    note('按需下载一次只能添加一个链接，请只保留一行地址');
+    $('urls').focus();
+    return;
+  }
+
   const body = {
     urls,
     speed: Number($('speed').value),
@@ -1076,8 +1188,20 @@ async function enqueue(startNow) {
   if (out) body.outDir = out;
   const label = $('note').value.trim();
   if (label) body.note = label;
-  const limit = $('limit').value.trim();
-  if (limit) body.limit = Number(limit);
+
+  // 按需下载：先读总片数，再让用户填区间
+  if (ondemand) {
+    const info = await probePlaylist(urls[0]);
+    if (!info) return;
+    if (!info.total) {
+      note('这条播放列表里没有分片');
+      return;
+    }
+    const picked = await askRange(info.total);
+    if (!picked) return;
+    body.urls = [urls[0]];
+    body.range = picked;
+  }
 
   const res = await fetch('/api/queue', {
     method: 'POST',
@@ -1093,8 +1217,9 @@ async function enqueue(startNow) {
 
   saveSettings();
   if (data.added > 0) {
-    banner('已加入队列', `${data.added} 个`, `${body.speed}x`, label ? `备注 ${label}` : '');
-    toast(`已加入 ${data.added} 个任务`, 'ok');
+    const rangeText = body.range ? `第 ${body.range.start}–${body.range.end} 片` : '';
+    banner('已加入队列', `${data.added} 个`, `${body.speed}x`, rangeText, label ? `备注 ${label}` : '');
+    toast(`已加入 ${data.added} 个任务${rangeText ? `（${rangeText}）` : ''}`, 'ok');
     $('urls').value = '';
     $('note').value = '';
   }
@@ -1366,7 +1491,9 @@ events.onmessage = (message) => {
       $('count').textContent = `0/${event.total}`;
       banner(
         `清单解析完成${jobId && queue.length > 1 ? ` · #${jobOrder.get(jobId) ?? '?'}` : ''}`,
-        `${event.total} 片`,
+        event.range
+          ? `${event.range.start}–${event.range.end} 片（原片共 ${event.playlistTotal} 片）`
+          : `${event.total} 片`,
         fmtDuration(event.totalDuration * 1000),
         `${event.discontinuities} 个断点`,
         event.isVod ? '静态点播' : '非点播',
@@ -1443,6 +1570,7 @@ if (saved.jitter !== undefined) $('jitter').value = saved.jitter;
 if (saved.retries !== undefined) $('retries').value = saved.retries;
 if (saved.out !== undefined) $('out').value = saved.out;
 if (saved.remux !== undefined) $('remux').checked = Boolean(saved.remux);
+if (saved.ondemand !== undefined) $('ondemand').checked = Boolean(saved.ondemand);
 syncChips();
 drawSpark();
 

@@ -10,6 +10,7 @@ import type {
   QueueItemSnapshot,
   QueueStatus,
   QueueSummaryEntry,
+  SegmentRange,
   ServerEvent,
   TaskEvent,
 } from './types.ts';
@@ -19,6 +20,8 @@ export interface QueueParams {
   jitterMs: number;
   retries: number;
   limit?: number;
+  /** 按需下载：只下 [start, end] 这一段（1-based，含首含尾） */
+  range?: SegmentRange;
   outDir?: string;
   remux: boolean;
   merge: boolean;
@@ -72,6 +75,13 @@ function sameUrl(a: string, b: string): boolean {
   return a.trim() === b.trim();
 }
 
+/** 两个区间是否等价（都为空也算等价：都是整片下载） */
+function sameRange(a?: SegmentRange, b?: SegmentRange): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.start === b.start && a.end === b.end;
+}
+
 interface QueueItem {
   id: string;
   url: string;
@@ -94,6 +104,8 @@ interface QueueItem {
   outputPath: string | null;
   /** 播放列表总时长（秒），入队后异步探测 */
   durationSec: number | null;
+  /** 整条播放列表的分片数（按需下载时 total 只是区间长度） */
+  playlistTotal?: number;
   error?: string;
   recovered?: boolean;
 }
@@ -359,6 +371,7 @@ export class DownloadQueue {
         jitterMs: typeof state?.jitterMs === 'number' ? state.jitterMs : params.jitterMs,
         retries: typeof state?.retries === 'number' ? state.retries : params.retries,
         limit: undefined,
+        range: state?.range ?? params.range,
         remux: false,
         merge: state?.merge ?? params.merge,
       },
@@ -375,6 +388,7 @@ export class DownloadQueue {
       elapsedMs: scan.elapsedMs,
       outputPath: scan.hasOutput ? join(scan.dir, 'output.ts') : null,
       durationSec: scan.durationSec,
+      playlistTotal: state?.playlistTotal,
     };
   }
 
@@ -430,7 +444,13 @@ export class DownloadQueue {
         continue;
       }
 
-      const exists = this.items.some((i) => i.url && sameUrl(i.url, url) && i.status !== 'cancelled');
+      const exists = this.items.some(
+        (i) =>
+          i.url &&
+          sameUrl(i.url, url) &&
+          sameRange(i.params.range, params.range) &&
+          i.status !== 'cancelled',
+      );
       if (exists) {
         duplicates += 1;
         continue;
@@ -439,7 +459,7 @@ export class DownloadQueue {
       batchIndex += 1;
 
       // 关键：磁盘上已经有这个链接的目录，就接管它续传，绝不新建目录重下
-      const onDisk = this.findDisk(disk, url);
+      const onDisk = this.findDisk(disk, url, params.range);
       if (onDisk) {
         const item = this.itemFromScan(onDisk, url, params);
         item.recovered = false;
@@ -476,7 +496,12 @@ export class DownloadQueue {
         note = await this.uniqueName(wanted);
         outDir = `downloads/${note}`;
       } else {
-        outDir = params.outDir && params.outDir.trim() ? params.outDir.trim() : defaultOutDir(url);
+        // 按需下载的默认目录带区间后缀，避免与整片下载、其他区间互相覆盖
+        const suffix = params.range ? `-${params.range.start}-${params.range.end}` : '';
+        outDir =
+          params.outDir && params.outDir.trim()
+            ? params.outDir.trim()
+            : `downloads/${taskNameFromUrl(url)}${suffix}`;
       }
 
       this.items.push({
@@ -504,17 +529,18 @@ export class DownloadQueue {
     return { added, duplicates, overflow, reused, completed };
   }
 
-  /** 在磁盘扫描结果里找这个链接对应的目录 */
-  private findDisk(disk: DiskScan[], url: string): DiskScan | null {
+  /** 在磁盘扫描结果里找这个链接（且区间一致）对应的目录 */
+  private findDisk(disk: DiskScan[], url: string, range?: SegmentRange): DiskScan | null {
     const claimed = (d: DiskScan): boolean => this.items.some((i) => resolve(i.outDir) === d.dir);
+    const sameTask = (d: DiskScan): boolean => sameRange(d.state?.range, range);
 
     // 1) state.json 里记着同一个链接 —— 最可靠
-    const byUrl = disk.find((d) => d.url && sameUrl(d.url, url) && !claimed(d));
+    const byUrl = disk.find((d) => d.url && sameUrl(d.url, url) && sameTask(d) && !claimed(d));
     if (byUrl) return byUrl;
 
     // 2) 老目录没记链接（本功能之前建的），目录名又正好等于地址推导出的任务名
     const guess = taskNameFromUrl(url);
-    const byName = disk.find((d) => !d.url && d.name === guess && !claimed(d));
+    const byName = disk.find((d) => !d.url && d.name === guess && sameTask(d) && !claimed(d));
     return byName ?? null;
   }
 
@@ -630,8 +656,19 @@ export class DownloadQueue {
       const client = new FetchHttpClient({}, 15_000);
       const text = (await client.get(item.url)).toString('utf8');
       const playlist = parsePlaylist(text, item.url);
-      item.durationSec = playlist.totalDuration;
-      if (item.total === 0) item.total = playlist.segments.length;
+      const all = playlist.segments;
+      item.playlistTotal = all.length;
+
+      const range = item.params.range;
+      if (range) {
+        const from = Math.max(1, Math.min(range.start, all.length));
+        const to = Math.max(from, Math.min(range.end, all.length));
+        item.total = to - from + 1;
+        item.durationSec = all.slice(from - 1, to).reduce((sum, seg) => sum + seg.duration, 0);
+      } else {
+        item.durationSec = playlist.totalDuration;
+        if (item.total === 0) item.total = all.length;
+      }
       this.publish();
     } catch {
       /* 探测失败就保持未知，不阻塞队列 */
@@ -764,6 +801,7 @@ export class DownloadQueue {
       jitterMs: item.params.jitterMs,
       retries: item.params.retries,
       limit: item.params.limit,
+      range: item.params.range,
       remux: item.params.remux,
       merge: item.params.merge,
       note: item.note,
@@ -780,6 +818,8 @@ export class DownloadQueue {
       item.bytes = result.bytes;
       item.elapsedMs = result.elapsedMs;
       item.outputPath = result.outputPath;
+      item.playlistTotal = result.playlistTotal;
+      if (result.range) item.params.range = result.range;
       item.status = result.failed.length > 0 ? 'failed' : 'done';
     } catch (err) {
       item.status = this.stopped ? 'cancelled' : 'failed';
@@ -866,6 +906,8 @@ function toSnapshot(item: QueueItem): QueueItemSnapshot {
     elapsedMs: item.elapsedMs,
     outputPath: item.outputPath,
     durationSec: item.durationSec,
+    range: item.params.range,
+    playlistTotal: item.playlistTotal,
     estimateMs:
       item.durationSec !== null
         ? (item.durationSec * 1000) / Math.max(0.1, item.params.speed)
@@ -894,6 +936,11 @@ function reviveItem(raw: unknown): QueueItem | null {
   const status = src.status;
   const allowed: QueueStatus[] = ['pending', 'running', 'done', 'failed', 'cancelled', 'interrupted'];
   const params = (src.params ?? {}) as Record<string, unknown>;
+  const rawRange = params.range as Record<string, unknown> | undefined;
+  const range =
+    rawRange && typeof rawRange.start === 'number' && typeof rawRange.end === 'number'
+      ? { start: Math.trunc(rawRange.start), end: Math.trunc(rawRange.end) }
+      : undefined;
 
   return {
     id,
@@ -903,6 +950,7 @@ function reviveItem(raw: unknown): QueueItem | null {
       jitterMs: typeof params.jitterMs === 'number' ? params.jitterMs : 300,
       retries: typeof params.retries === 'number' ? params.retries : 3,
       limit: typeof params.limit === 'number' ? params.limit : undefined,
+      range,
       outDir: typeof params.outDir === 'string' ? params.outDir : undefined,
       remux: Boolean(params.remux),
       merge: params.merge !== false,
@@ -922,6 +970,7 @@ function reviveItem(raw: unknown): QueueItem | null {
     elapsedMs: typeof src.elapsedMs === 'number' ? src.elapsedMs : 0,
     outputPath: typeof src.outputPath === 'string' ? src.outputPath : null,
     durationSec: typeof src.durationSec === 'number' ? src.durationSec : null,
+    playlistTotal: typeof src.playlistTotal === 'number' ? src.playlistTotal : undefined,
     error: typeof src.error === 'string' ? src.error : undefined,
     recovered: Boolean(src.recovered),
   };

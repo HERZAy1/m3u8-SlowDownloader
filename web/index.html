@@ -23,7 +23,7 @@
         </span>
         <span class="brand-text">
           <span class="name">m3u8 Downloader</span>
-          <span class="ver">v0.4.1</span>
+          <span class="ver">v0.5.0</span>
         </span>
       </div>
       <div class="topbar-right">
@@ -113,10 +113,13 @@
                   <span class="label">重试次数</span>
                   <input id="retries" type="number" value="3" min="0" max="10" step="1" />
                 </label>
-                <label class="field">
-                  <span class="label">只下前 N 片</span>
-                  <input id="limit" type="number" placeholder="全部" min="1" step="1" />
-                </label>
+                <div class="field">
+                  <span class="label">下载范围</span>
+                  <label class="box-check" id="ondemandbox">
+                    <input id="ondemand" type="checkbox" />
+                    <span>按需下载</span>
+                  </label>
+                </div>
                 <label class="field">
                   <span class="label">输出目录</span>
                   <input
@@ -128,6 +131,9 @@
                   />
                 </label>
               </div>
+              <p class="adv-note" id="ondemandnote" hidden>
+                按需下载一次只能添加一个链接。加入队列时会先读取总片数，再让你填写区间（例如 200~300）。
+              </p>
             </div>
           </div>
         </div>

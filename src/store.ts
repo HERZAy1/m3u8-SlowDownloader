@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { SegmentRange } from './types.ts';
 
 /** 任务在磁盘上的状态。'running' 只应出现在进程存活期间——读到它就说明上次是异常退出。 */
 export type StateStatus = 'running' | 'done' | 'failed' | 'interrupted';
@@ -26,6 +27,10 @@ export interface TaskStateFile {
   merge?: boolean;
   remux?: boolean;
   limit?: number;
+  /** 按需下载的区间；缺省表示整条视频 */
+  range?: SegmentRange;
+  /** 整条播放列表的分片数（total 是区间内的数量） */
+  playlistTotal?: number;
   jitterMs?: number;
   retries?: number;
   /** 最后一次状态写入时间 */

@@ -1,7 +1,7 @@
 import { CancelledError } from './control.ts';
 import { formatDuration } from './playlist.ts';
 import { DownloadTask } from './task.ts';
-import type { TaskEvent } from './types.ts';
+import type { SegmentRange, TaskEvent } from './types.ts';
 
 interface CliOptions {
   url: string | null;
@@ -11,6 +11,7 @@ interface CliOptions {
   retries: number;
   resume: 'fast' | 'pace';
   limit: number | null;
+  range: SegmentRange | null;
   merge: boolean;
   remux: boolean;
   dryRun: boolean;
@@ -27,6 +28,7 @@ function parseArgs(argv: string[]): CliOptions {
     retries: 3,
     resume: 'fast',
     limit: null,
+    range: null,
     merge: true,
     remux: false,
     dryRun: false,
@@ -65,6 +67,16 @@ function parseArgs(argv: string[]): CliOptions {
       case '--limit':
         opts.limit = Number.parseInt(next(), 10);
         break;
+      case '--range': {
+        const raw = next().trim();
+        const matched = /^(\d+)\s*[-~～]\s*(\d+)$/.exec(raw);
+        if (!matched) throw new Error('--range 应形如 200-300');
+        const start = Number.parseInt(matched[1] as string, 10);
+        const end = Number.parseInt(matched[2] as string, 10);
+        if (start < 1 || end < start) throw new Error('--range 需要 1 ≤ 起始 ≤ 结束');
+        opts.range = { start, end };
+        break;
+      }
       case '--no-merge':
         opts.merge = false;
         break;
@@ -104,6 +116,7 @@ function printHelp(): void {
   --retries <n>      单分片重试次数，默认 3
   --resume <mode>    fast（跳过已下载，默认）| pace（保持节奏）
   --limit <n>        只下载前 n 片，调试用
+  --range <a-b>      按需下载：只下第 a 到 b 片（含首尾），如 --range 200-300
   --no-merge         下载完不拼接
   --remux            拼接后用 ffmpeg 重建时间戳
   --dry-run          只解析并打印统计，不下载
@@ -114,6 +127,7 @@ function printHelp(): void {
   node src/cli.ts "https://example.com/play.m3u8" --speed 2
   node src/cli.ts "https://example.com/play.m3u8" --dry-run
   node src/cli.ts "https://example.com/play.m3u8" --limit 5 --speed 20 --out ./tmp
+  node src/cli.ts "https://example.com/play.m3u8" --range 200-300 --speed 2
 `);
 }
 
@@ -167,6 +181,7 @@ async function main(): Promise<number> {
     retries: opts.retries,
     resume: opts.resume,
     limit: opts.limit ?? undefined,
+    range: opts.range ?? undefined,
     merge: opts.merge,
     remux: opts.remux,
     dryRun: opts.dryRun,
@@ -177,6 +192,11 @@ async function main(): Promise<number> {
   task.on((event: TaskEvent) => {
     switch (event.type) {
       case 'playlist':
+        if (event.range) {
+          console.log(
+            `按需下载：第 ${event.range.start}–${event.range.end} 片（原片共 ${event.playlistTotal} 个）`,
+          );
+        }
         console.log(
           `分片 ${event.total} 个，总时长 ${formatDuration(event.totalDuration)}（${event.totalDuration.toFixed(2)}s），` +
             `断点 ${event.discontinuities} 个，${event.isVod ? '静态点播' : '非点播'}`,

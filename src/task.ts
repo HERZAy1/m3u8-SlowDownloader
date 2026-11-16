@@ -8,7 +8,7 @@ import { parsePlaylist } from './playlist.ts';
 import { runSchedule } from './scheduler.ts';
 import { SegmentStore } from './store.ts';
 import type { StateStatus, TaskStateFile } from './store.ts';
-import type { HttpClient, Playlist, TaskEvent } from './types.ts';
+import type { HttpClient, Playlist, SegmentRange, TaskEvent } from './types.ts';
 
 export interface DownloadTaskOptions {
   url: string;
@@ -20,6 +20,11 @@ export interface DownloadTaskOptions {
   resume?: 'fast' | 'pace';
   /** 只处理前 N 片，调试用。 */
   limit?: number;
+  /**
+   * 按需下载：只下 [start, end] 这一段（1-based，含首含尾）。
+   * 设置后 limit 失效。
+   */
+  range?: SegmentRange;
   merge?: boolean;
   remux?: boolean;
   dryRun?: boolean;
@@ -32,11 +37,22 @@ export interface DownloadTaskOptions {
 export interface RunResult {
   playlist: Playlist;
   total: number;
+  /** 整条播放列表的分片数（total 是按需下载区间内的数量） */
+  playlistTotal: number;
+  range?: SegmentRange;
   downloaded: number;
   failed: number[];
   bytes: number;
   elapsedMs: number;
   outputPath: string | null;
+}
+
+/** 把用户填的区间夹到合法范围内：1 ≤ start ≤ end ≤ total */
+function clampRange(range: SegmentRange | undefined, total: number): SegmentRange | undefined {
+  if (!range || total <= 0) return undefined;
+  const start = Math.min(Math.max(1, Math.trunc(range.start) || 1), total);
+  const end = Math.min(Math.max(start, Math.trunc(range.end) || total), total);
+  return { start, end };
 }
 
 /** 运行中多久落一次 state.json：太频繁会拖慢下载，太长则断电后丢失进度细节。 */
@@ -86,8 +102,13 @@ export class DownloadTask {
     const text = (await client.get(this.options.url)).toString('utf8');
     const playlist = parsePlaylist(text, this.options.url);
 
-    const segments = playlist.segments.slice(0, limit);
+    // 按需下载优先：只取区间内的分片，文件序号仍是它在原视频里的序号
+    const range = clampRange(this.options.range, playlist.segments.length);
+    const segments = range
+      ? playlist.segments.slice(range.start - 1, range.end)
+      : playlist.segments.slice(0, limit);
     const total = segments.length;
+    const playlistTotal = playlist.segments.length;
     const totalDuration = segments.reduce((sum, seg) => sum + seg.duration, 0);
 
     this.emit({
@@ -96,12 +117,16 @@ export class DownloadTask {
       totalDuration,
       discontinuities: playlist.discontinuityCount,
       isVod: playlist.isVod,
+      range,
+      playlistTotal,
     });
 
     if (this.options.dryRun) {
       return {
         playlist,
         total,
+        playlistTotal,
+        range,
         downloaded: 0,
         failed: [],
         bytes: 0,
@@ -138,6 +163,8 @@ export class DownloadTask {
       merge: shouldMerge,
       remux: this.options.remux ?? false,
       limit: Number.isFinite(limit) ? limit : undefined,
+      range,
+      playlistTotal,
       jitterMs,
       retries,
       updatedAt: new Date().toISOString(),
@@ -251,7 +278,11 @@ export class DownloadTask {
       if (shouldMerge && result.failed.length === 0) {
         this.emit({ type: 'phase', phase: 'merging' });
         outputPath = resolve(outDir, 'output.ts');
-        await mergeSegments(store, total, { outputPath });
+        await mergeSegments(
+          store,
+          segments.map((seg) => seg.index),
+          { outputPath },
+        );
 
         if (this.options.remux) {
           this.emit({ type: 'phase', phase: 'remuxing' });
@@ -295,6 +326,8 @@ export class DownloadTask {
     return {
       playlist,
       total,
+      playlistTotal,
+      range,
       downloaded: downloadedCount,
       failed: failedList,
       bytes,
