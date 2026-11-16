@@ -36,13 +36,17 @@ export async function scanTaskDir(dir: string, name: string): Promise<TaskFileIn
   let durationMs: number | null = null;
 
   const raw = await readFile(join(dir, 'state.json'), 'utf8').catch(() => null);
+  let note: string | undefined;
   if (raw) {
     try {
       const state = JSON.parse(raw) as {
         createdAt?: string;
         t0?: number;
         elapsedMs?: number;
+        note?: string;
+        taskName?: string;
       };
+      if (typeof state.note === 'string' && state.note.trim()) note = state.note.trim();
       if (state.createdAt) {
         const parsed = Date.parse(state.createdAt);
         if (!Number.isNaN(parsed)) startedAt = parsed;
@@ -60,6 +64,7 @@ export async function scanTaskDir(dir: string, name: string): Promise<TaskFileIn
   return {
     id: name,
     name,
+    note,
     path: dir,
     segments,
     segmentBytes,

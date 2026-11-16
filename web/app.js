@@ -385,8 +385,10 @@ function fileRow(file) {
 
   const title = document.createElement('b');
   title.className = 'f-title';
-  title.textContent = file.name;
-  title.title = file.path;
+  // 主标题优先用用户备注，其次才是目录名
+  const titleText = file.note?.trim() || file.name;
+  title.textContent = titleText;
+  title.title = file.note ? `${file.note}\n目录：${file.name}\n${file.path}` : file.path;
 
   const tag = document.createElement('span');
   tag.className = `f-tag${file.hasOutput ? ' on' : ''}`;
@@ -396,7 +398,9 @@ function fileRow(file) {
 
   const parts = document.createElement('span');
   parts.className = 'f-parts';
-  parts.textContent = `分片 ${file.segments} 个 · ${fmtSize(file.segmentBytes)}`;
+  const detail = `分片 ${file.segments} 个 · ${fmtSize(file.segmentBytes)}`;
+  parts.textContent = file.note && file.note !== file.name ? `目录 ${file.name} · ${detail}` : detail;
+  parts.title = file.path;
 
   name.append(head, parts);
 
@@ -476,10 +480,11 @@ async function loadFiles() {
 }
 
 async function deleteTaskFiles(file) {
+  const label = file.note?.trim() || file.name;
   const ok = await askDialog({
     title: '删除任务文件',
     message:
-      `${file.name}\n\n` +
+      `${label}${file.note && file.note !== file.name ? `（目录 ${file.name}）` : ''}\n\n` +
       `分片：${file.segments} 个（${fmtSize(file.segmentBytes)}）\n` +
       `成品：${file.hasOutput ? fmtSize(file.outputBytes) : '无'}\n` +
       `合计：${fmtSize(file.totalBytes)}\n\n删除后不可恢复。`,
@@ -491,8 +496,8 @@ async function deleteTaskFiles(file) {
   const res = await fetch(`/api/files?id=${encodeURIComponent(file.id)}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));
   if (res.ok) {
-    banner('已删除任务文件', file.name, `释放 ${fmtSize(data.freedBytes)}`);
-    toast(`已删除 ${file.name}`, 'ok');
+    banner('已删除任务文件', label, `释放 ${fmtSize(data.freedBytes)}`);
+    toast(`已删除 ${label}`, 'ok');
     await loadFiles();
   } else {
     note(`删除失败：${data.error || res.status}`);

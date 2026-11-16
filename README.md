@@ -7,7 +7,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A522.6-339933?logo=nodedotjs&logoColor=white)
 ![deps](https://img.shields.io/badge/deps-0-2ea043)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
-![version](https://img.shields.io/badge/version-0.6.0-6b8cff)
+![version](https://img.shields.io/badge/version-0.6.1-6b8cff)
 ![tests](https://img.shields.io/badge/tests-29%20passing-2ea043)
 ![license](https://img.shields.io/badge/license-MIT-2ea043)
 
@@ -51,7 +51,7 @@
 | **零依赖** | 只用 Node 内置能力，没有 `node_modules`，不需要 `npm install` |
 | **无编译** | Node ≥ 22.6 直接执行 TypeScript（原生类型擦除） |
 | **队列 + 改名** | 一次排多个地址串行执行；每个任务可起名，目录名与下载文件名都跟着变 |
-| **文件管理** | 定时扫描磁盘，列出分片 / 成品占用、开始时间、耗时，可一键清理 |
+| **文件管理** | 定时扫描磁盘，**用备注名做标题**（目录名作副标题），列出分片 / 成品占用、开始时间、耗时，可一键清理 |
 | **浏览器交付** | 下完直接在页面上点「下载」，不用翻目录找文件 |
 | **HTTP 层可替换** | 调度器只依赖 `HttpClient` 接口，换成 TLS 指纹实现时调度逻辑一行都不用改 |
 

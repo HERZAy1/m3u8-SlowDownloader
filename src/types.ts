@@ -170,7 +170,10 @@ export interface DiskTaskInfo {
 /** 磁盘上一个任务留下的文件 */
 export interface TaskFileInfo {
   id: string;
+  /** 目录名 */
   name: string;
+  /** 用户备注（state.json 里记的），没有就是 undefined */
+  note?: string;
   path: string;
   segments: number;
   segmentBytes: number;

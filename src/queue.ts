@@ -380,7 +380,8 @@ export class DownloadQueue {
       status: complete ? 'done' : 'interrupted',
       taskName: scan.name,
       outDir: scan.relDir,
-      note: scan.name,
+      // 恢复时优先用 state.json 里记的备注名，否则队列与文件面板会显示成目录名
+      note: state?.note?.trim() || scan.name,
       addedAt: scan.startedAt ?? Date.now(),
       startedAt: scan.startedAt ?? undefined,
       total: scan.total,
