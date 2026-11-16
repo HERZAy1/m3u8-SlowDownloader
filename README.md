@@ -72,7 +72,7 @@ flowchart LR
   T --> P["PlaylistParser<br/>读 #EXTINF"]
   T --> S["Scheduler<br/>绝对时间轴 / 抖动 / 重试"]
   S --> H["HttpClient<br/>接口，可替换"]
-  T --> D[("downloads/任务名<br/>segments/ + state.json")]
+  T --> D["downloads/任务名<br/>segments/ + state.json"]
 ```
 
 调度器每一片的全部逻辑：
