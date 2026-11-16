@@ -852,7 +852,7 @@ function renderResults() {
   $('resultsummary').textContent =
     `${finished.length} 项 · ${okCount} 完整` +
     (interCount ? ` · ${interCount} 中断` : '') +
-    (badCount ? ` · ${badCount} 待补齐（缺 ${missing} 片）` : '');
+    (badCount ? ` · ${badCount} 待补齐${missing > 0 ? `（缺 ${missing} 片）` : ''}` : '');
 
   $('retryall').hidden = !finished.some(
     (i) => (i.status === 'failed' || i.status === 'cancelled' || i.status === 'interrupted') && i.url,
@@ -1009,6 +1009,46 @@ function syncChips() {
   for (const chip of document.querySelectorAll('#speedchips button')) {
     chip.classList.toggle('on', Number(chip.dataset.speed) === value);
   }
+}
+
+/* ---------------- 高级设置 ---------------- */
+
+const ADV_KEY = 'm3u8dl.advanced';
+const advEl = $('adv');
+
+function shortPath(value) {
+  if (!value) return '默认目录';
+  return value.length > 22 ? `${value.slice(0, 22)}…` : value;
+}
+
+/** 收起时也能一眼看到当前的非默认设置 */
+function updateAdvSummary() {
+  const jitter = $('jitter').value.trim() || '0';
+  const retries = $('retries').value.trim() || '0';
+  const limit = $('limit').value.trim();
+  $('advsummary').textContent = [
+    `抖动 ${jitter}ms`,
+    `重试 ${retries} 次`,
+    limit ? `只下前 ${limit} 片` : '下载全部',
+    shortPath($('out').value.trim()),
+  ].join(' · ');
+}
+
+function setAdvOpen(open, persist = true) {
+  advEl.dataset.open = open ? 'true' : 'false';
+  $('advtoggle').setAttribute('aria-expanded', String(open));
+  if (!persist) return;
+  try {
+    localStorage.setItem(ADV_KEY, open ? '1' : '0');
+  } catch {
+    /* 隐私模式下不可用，忽略 */
+  }
+}
+
+$('advtoggle').addEventListener('click', () => setAdvOpen(advEl.dataset.open !== 'true'));
+
+for (const id of ['jitter', 'retries', 'limit', 'out']) {
+  $(id).addEventListener('input', updateAdvSummary);
 }
 
 /* ---------------- 操作 ---------------- */
@@ -1405,6 +1445,15 @@ if (saved.out !== undefined) $('out').value = saved.out;
 if (saved.remux !== undefined) $('remux').checked = Boolean(saved.remux);
 syncChips();
 drawSpark();
+
+let savedAdv = null;
+try {
+  savedAdv = localStorage.getItem(ADV_KEY);
+} catch {
+  /* 隐私模式下不可用，忽略 */
+}
+setAdvOpen(savedAdv === null ? Boolean(saved.out) : savedAdv === '1', false);
+updateAdvSummary();
 
 fetch('/api/state')
   .then((r) => r.json())

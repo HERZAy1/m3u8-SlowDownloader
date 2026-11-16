@@ -23,7 +23,7 @@
         </span>
         <span class="brand-text">
           <span class="name">m3u8 Downloader</span>
-          <span class="ver">v0.4.0</span>
+          <span class="ver">v0.4.1</span>
         </span>
       </div>
       <div class="topbar-right">
@@ -59,35 +59,21 @@
         </div>
 
         <div class="panel-body composer">
-          <div class="cmp-main">
-            <label class="field">
-              <span class="label">播放列表地址</span>
-              <textarea
-                id="urls"
-                rows="4"
-                placeholder="https://…/play-1.m3u8&#10;https://…/play-2.m3u8"
-                spellcheck="false"
-              ></textarea>
-            </label>
-            <div class="cmp-row">
-              <label class="field">
-                <span class="label">备注 · 用作目录名与文件名</span>
-                <input id="note" type="text" placeholder="例：第 3 讲 网络协议" autocomplete="off" />
-              </label>
-              <label class="field">
-                <span class="label">输出目录</span>
-                <input
-                  id="out"
-                  type="text"
-                  placeholder="留空 = downloads/&lt;任务名&gt;"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-              </label>
-            </div>
-          </div>
+          <label class="field">
+            <span class="label">播放列表地址</span>
+            <textarea
+              id="urls"
+              rows="4"
+              placeholder="https://…/play-1.m3u8&#10;https://…/play-2.m3u8"
+              spellcheck="false"
+            ></textarea>
+          </label>
 
-          <div class="cmp-side">
+          <div class="cmp-row">
+            <label class="field">
+              <span class="label">备注 · 用作目录名与文件名</span>
+              <input id="note" type="text" placeholder="例：第 3 讲 网络协议" autocomplete="off" />
+            </label>
             <div class="field">
               <span class="label">倍速</span>
               <input id="speed" type="number" value="2" min="0" max="50" step="0.5" />
@@ -98,20 +84,51 @@
                 <button type="button" class="chip" data-speed="8">8x</button>
               </div>
             </div>
-            <div class="cmp-row">
-              <label class="field">
-                <span class="label">抖动 (ms)</span>
-                <input id="jitter" type="number" value="300" min="0" max="5000" step="50" />
-              </label>
-              <label class="field">
-                <span class="label">重试次数</span>
-                <input id="retries" type="number" value="3" min="0" max="10" step="1" />
-              </label>
+          </div>
+        </div>
+
+        <!-- 高级设置：默认收起，点标题展开 -->
+        <div class="adv" id="adv" data-open="false">
+          <button class="adv-toggle" id="advtoggle" type="button" aria-expanded="false" aria-controls="advbody">
+            <svg class="adv-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m9 6 6 6-6 6" />
+            </svg>
+            <svg class="adv-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M4 7h8M16.5 7H20M4 17h3.5M11.5 17H20" />
+              <circle cx="14.2" cy="7" r="2.1" />
+              <circle cx="9.2" cy="17" r="2.1" />
+            </svg>
+            <span class="adv-title">高级设置</span>
+            <span class="adv-summary" id="advsummary"></span>
+          </button>
+
+          <div class="adv-body" id="advbody">
+            <div class="adv-clip">
+              <div class="adv-grid">
+                <label class="field">
+                  <span class="label">抖动 (ms)</span>
+                  <input id="jitter" type="number" value="300" min="0" max="5000" step="50" />
+                </label>
+                <label class="field">
+                  <span class="label">重试次数</span>
+                  <input id="retries" type="number" value="3" min="0" max="10" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">只下前 N 片</span>
+                  <input id="limit" type="number" placeholder="全部" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">输出目录</span>
+                  <input
+                    id="out"
+                    type="text"
+                    placeholder="留空 = downloads/&lt;任务名&gt;"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </label>
+              </div>
             </div>
-            <label class="field">
-              <span class="label">只下前 N 片</span>
-              <input id="limit" type="number" placeholder="全部" min="1" step="1" />
-            </label>
           </div>
         </div>
 
