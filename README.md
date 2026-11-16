@@ -7,7 +7,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A522.6-339933?logo=nodedotjs&logoColor=white)
 ![deps](https://img.shields.io/badge/deps-0-2ea043)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
-![version](https://img.shields.io/badge/version-0.6.1-6b8cff)
+![version](https://img.shields.io/badge/version-0.6.2-6b8cff)
 ![tests](https://img.shields.io/badge/tests-29%20passing-2ea043)
 ![license](https://img.shields.io/badge/license-MIT-2ea043)
 
@@ -201,7 +201,7 @@ systemctl status m3u8-downloader
 
 **备注即文件名**：填了备注，输出目录和下载文件名都用它（备注「第一讲 网络基础」→ `downloads/第一讲 网络基础/output.ts`，浏览器下载得到 `第一讲 网络基础.ts`）。运行中改名只改显示名，任务结束后再重命名目录。
 
-**快捷键**：`Ctrl+Enter` 开始队列，`Esc` 停止（有弹窗时先关弹窗）。参数与地址存在浏览器 `localStorage`，下次打开自动回填。
+**快捷键**：`Ctrl+Enter` 开始队列，`Esc` 停止（有弹窗时先关弹窗）。参数与地址存在浏览器 `localStorage`，下次打开自动回填；参数在「加入队列」时快照进任务，所以运行中改设置不影响正在下载的任务，只对之后添加的任务生效。
 
 <details>
 <summary><b>命令行参数全表</b></summary>

@@ -762,6 +762,13 @@ kbd {
   line-height: 1.65;
 }
 
+.adv-hint {
+  margin: -8px 18px 14px;
+  color: var(--text-4);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 /* ---------------- 控制台 ---------------- */
 
 .console .panel-head {

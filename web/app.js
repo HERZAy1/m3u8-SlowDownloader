@@ -964,8 +964,8 @@ function updateButtons() {
   $('clear').disabled = !hasFinished;
   $('pause').textContent = queuePaused ? '继续' : '暂停';
 
-  for (const id of ['speed', 'jitter', 'retries', 'out', 'remux', 'ondemand']) $(id).disabled = running;
-  for (const chip of document.querySelectorAll('#speedchips button')) chip.disabled = running;
+  // 参数只在「加入队列」时快照进任务，运行中改这些不会影响正在下的任务，
+  // 所以不再锁定表单——否则长任务期间用户永远改不了设置。
 }
 
 function applyQueue(snap) {
