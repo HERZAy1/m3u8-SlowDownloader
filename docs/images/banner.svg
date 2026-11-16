@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300" role="img" aria-label="m3u8 Downloader — 像播放器一样下载">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#080a0f" />
+      <stop offset="0.55" stop-color="#0b0e15" />
+      <stop offset="1" stop-color="#0a0c13" />
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c96ff" />
+      <stop offset="0.55" stop-color="#6b5cff" />
+      <stop offset="1" stop-color="#9a6cff" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7d9bff" />
+      <stop offset="1" stop-color="#b78cff" />
+    </linearGradient>
+    <linearGradient id="bar" x1="768" y1="0" x2="1192" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5b78f5" />
+      <stop offset="1" stop-color="#8ea8ff" />
+    </linearGradient>
+    <radialGradient id="glowA" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6b8cff" stop-opacity="0.30" />
+      <stop offset="1" stop-color="#6b8cff" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="glowB" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#9a6cff" stop-opacity="0.26" />
+      <stop offset="1" stop-color="#9a6cff" stop-opacity="0" />
+    </radialGradient>
+    <clipPath id="played">
+      <rect x="768" y="180" width="206" height="32" />
+    </clipPath>
+  </defs>
+
+  <rect width="1280" height="300" rx="18" fill="url(#bg)" />
+  <ellipse cx="180" cy="-40" rx="420" ry="260" fill="url(#glowA)" />
+  <ellipse cx="1180" cy="40" rx="380" ry="240" fill="url(#glowB)" />
+  <rect x="0.5" y="0.5" width="1279" height="299" rx="18" fill="none" stroke="#ffffff" stroke-opacity="0.06" />
+
+  <!-- 品牌标 -->
+  <rect x="72" y="62" width="48" height="48" rx="13" fill="url(#mark)" />
+  <g stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M96 76v11" />
+    <path d="m89.4 83.2 6.6 6.6 6.6-6.6" />
+    <path d="M84 100h24" />
+  </g>
+  <text x="136" y="96" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="30" font-weight="700" fill="#eef1f8">m3u8 Downloader</text>
+  <rect x="398" y="74" width="58" height="23" rx="11.5" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.1" />
+  <text x="427" y="90" text-anchor="middle" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="12" fill="#7b8497">v0.4.1</text>
+
+  <!-- 主标题 -->
+  <text x="72" y="184" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="38" font-weight="700" fill="url(#accent)">像播放器一样把视频下载下来</text>
+  <text x="72" y="218" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="16" fill="#8b93a7">按 <tspan font-family="'Cascadia Mono', Consolas, monospace" fill="#b9c0cf">#EXTINF</tspan> 节奏逐片请求 · 默认 2x · 不触发服务端过流风控</text>
+
+  <!-- 卖点胶囊 -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="12.5" fill="#8b93a7">
+    <rect x="72" y="242" width="66" height="26" rx="13" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.09" />
+    <text x="105" y="259" text-anchor="middle">零依赖</text>
+    <rect x="150" y="242" width="86" height="26" rx="13" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.09" />
+    <text x="193" y="259" text-anchor="middle">断电续传</text>
+    <rect x="248" y="242" width="86" height="26" rx="13" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.09" />
+    <text x="291" y="259" text-anchor="middle">GUI + CLI</text>
+    <rect x="346" y="242" width="108" height="26" rx="13" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.09" />
+    <text x="400" y="259" text-anchor="middle">输出原始 .ts</text>
+  </g>
+
+  <!-- 右侧时间轴卡片 -->
+  <rect x="744" y="56" width="472" height="188" rx="18" fill="#0e1119" stroke="#ffffff" stroke-opacity="0.08" />
+  <text x="768" y="94" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="12" letter-spacing="1.2" fill="#5b6478">播放时间轴</text>
+  <text x="768" y="150" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="40" font-weight="700" fill="#e9ecf3">48.6%</text>
+  <text x="1192" y="146" text-anchor="end" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="13" fill="#6d768a">1074 片 · 01:34:02</text>
+
+  <!-- 进度（虚线分片） -->
+  <line x1="768" y1="196" x2="1192" y2="196" stroke="#1b2130" stroke-width="14" stroke-dasharray="8 6" />
+  <g clip-path="url(#played)">
+    <line x1="768" y1="196" x2="1192" y2="196" stroke="url(#bar)" stroke-width="14" stroke-dasharray="8 6" />
+  </g>
+  <rect x="972" y="180" width="2.5" height="32" rx="1.25" fill="#dfe6ff" />
+  <circle cx="973.25" cy="196" r="5" fill="#ffffff" />
+
+  <text x="768" y="232" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif" font-size="12.5" fill="#5b6478">已下载 521 片 · 2.3 MB/s · 抖动 ±300ms</text>
+</svg>
