@@ -493,7 +493,8 @@ async function deleteTaskFiles(file) {
   });
   if (!ok) return;
 
-  const res = await fetch(`/api/files?id=${encodeURIComponent(file.id)}`, { method: 'DELETE' });
+  const query = new URLSearchParams({ id: file.id, path: file.path });
+  const res = await fetch(`/api/files?${query.toString()}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));
   if (res.ok) {
     banner('已删除任务文件', label, `释放 ${fmtSize(data.freedBytes)}`);
@@ -829,6 +830,8 @@ function renderQueue() {
 
   listEl.innerHTML = '';
   if (queue.length === 0) {
+    const hint = emptyRow.querySelector('span:last-child');
+    if (hint) hint.textContent = `粘贴地址后点「加入队列」，最多 ${maxQueue} 个`;
     listEl.appendChild(emptyRow);
     return;
   }
@@ -1301,6 +1304,7 @@ async function enqueue(startNow) {
   if (data.duplicates) note(`跳过重复地址 ${data.duplicates} 个`);
   if (data.reused) note(`复用磁盘上已有的目录 ${data.reused} 个（只补缺失分片，不会重下）`);
   if (data.completed) note(`其中 ${data.completed} 个已经是完整成品，可直接下载`);
+  if (data.conflicts) note(`输出目录已被占用，拒绝 ${data.conflicts} 个任务`);
   if (data.overflow) note(`队列已满（上限 ${maxQueue}），忽略 ${data.overflow} 个`);
 
   if (startNow) await fetch('/api/queue/start', { method: 'POST' });
@@ -1548,7 +1552,7 @@ $('speedchips').addEventListener('click', (event) => {
 });
 
 $('speed').addEventListener('input', syncChips);
-for (const id of ['jitter', 'retries', 'out', 'urls']) $(id).addEventListener('change', saveSettings);
+for (const id of ['speed', 'jitter', 'retries', 'out', 'urls']) $(id).addEventListener('change', saveSettings);
 $('remux').addEventListener('change', saveSettings);
 
 document.addEventListener('keydown', (event) => {

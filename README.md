@@ -4,11 +4,11 @@
 
 **像播放器一样把 m3u8 下载下来** —— 按 `#EXTINF` 的节奏逐片请求，视频多长就下多久（默认 2 倍速），不触发服务端的过流风控。
 
-![Node](https://img.shields.io/badge/node-%E2%89%A522.6-339933?logo=nodedotjs&logoColor=white)
+![Node](https://img.shields.io/badge/node-%E2%89%A522.18-339933?logo=nodedotjs&logoColor=white)
 ![deps](https://img.shields.io/badge/deps-0-2ea043)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
-![version](https://img.shields.io/badge/version-0.6.2-6b8cff)
-![tests](https://img.shields.io/badge/tests-29%20passing-2ea043)
+![version](https://img.shields.io/badge/version-0.6.3-6b8cff)
+![tests](https://img.shields.io/badge/tests-127%20assertions-2ea043)
 ![license](https://img.shields.io/badge/license-MIT-2ea043)
 
 [为什么需要它](#为什么需要它) · [特性](#特性) · [界面](#界面) · [快速开始](#快速开始) · [工作原理](#工作原理) · [HTTP 接口](#http-接口) · [常见问题](#常见问题)
@@ -20,7 +20,7 @@
 > [!WARNING]
 > **本项目仅供个人学习与备份使用。** 请只下载你有权访问的内容（自己买的课、自己的作品、版权方允许离线保存的内容），遵守目标平台的服务条款与当地法律。
 >
-> 它不提供、也不协助任何 DRM（Widevine / FairPlay / PlayReady）的破解，不绕过付费墙与会员权限；播放列表里出现 `#EXT-X-KEY` 会**直接报错退出**——这是设计上的拒绝，不是功能缺失。完整条款见[免责声明](#免责声明)。
+> 它不提供、也不协助任何 DRM（Widevine / FairPlay / PlayReady）的破解，不绕过付费墙与会员权限；播放列表里出现非 `METHOD=NONE` 的 `#EXT-X-KEY` 会**直接报错退出**——这是设计上的拒绝，不是功能缺失。完整条款见[免责声明](#免责声明)。
 
 ## 为什么需要它
 
@@ -49,7 +49,7 @@
 | **断电可恢复** | 队列存档 + 磁盘自愈，断电 / `kill -9` 后重启自动找回任务，点「继续」只补缺失分片 |
 | **失败隔离** | 单片重试 3 次（指数退避），失败不阻塞后续分片，最后精确列出缺哪几片 |
 | **零依赖** | 只用 Node 内置能力，没有 `node_modules`，不需要 `npm install` |
-| **无编译** | Node ≥ 22.6 直接执行 TypeScript（原生类型擦除） |
+| **无编译** | Node ≥ 22.18 直接执行 TypeScript（原生类型擦除） |
 | **队列 + 改名** | 一次排多个地址串行执行；每个任务可起名，目录名与下载文件名都跟着变 |
 | **文件管理** | 定时扫描磁盘，**用备注名做标题**（目录名作副标题），列出分片 / 成品占用、开始时间、耗时，可一键清理 |
 | **浏览器交付** | 下完直接在页面上点「下载」，不用翻目录找文件 |
@@ -98,7 +98,7 @@ for i in 0..n-1:
 
 | 依赖 | 必需 | 说明 |
 | :--- | :---: | :--- |
-| **Node.js ≥ 22.6** | ✅ | 需要原生 TypeScript 类型擦除，推荐 24+ |
+| **Node.js ≥ 22.18** | ✅ | 需要原生 TypeScript 类型擦除；推荐 24+ |
 | npm 包 | ❌ | 零依赖，不用装 |
 | ffmpeg | ⭕ | 仅「修复时间戳」需要 |
 | 浏览器 | ✅ | 只有 GUI 需要，任意现代浏览器 |
@@ -122,6 +122,7 @@ node src/server.ts     # 也可以手动启，默认 http://127.0.0.1:7788
 | `PORT` | 监听端口 | `7788` |
 | `HOST` | 监听地址，局域网访问填 `0.0.0.0` | `127.0.0.1` |
 | `STATE_DIR` | 队列存档目录 | `<项目>/state` |
+| `MAX_QUEUE` | 队列上限（正整数） | `20` |
 | `NO_BROWSER=1` | 不自动打开浏览器 | — |
 
 ### 方式二：命令行
@@ -199,7 +200,7 @@ systemctl status m3u8-downloader
 
 失败或中断的任务可以一键「补齐缺失」，只补缺的那几片。
 
-**备注即文件名**：填了备注，输出目录和下载文件名都用它（备注「第一讲 网络基础」→ `downloads/第一讲 网络基础/output.ts`，浏览器下载得到 `第一讲 网络基础.ts`）。运行中改名只改显示名，任务结束后再重命名目录。
+**备注即文件名**：填了备注，输出目录和下载文件名都用它（备注「第一讲 网络基础」→ `downloads/第一讲 网络基础/output.ts`，浏览器下载得到 `第一讲 网络基础.ts`）。运行中改名只改显示名，任务结束后再重命名目录。若使用「输出目录」指定了外部目录，备注改名只改显示名，不会搬移该目录；文件面板删除也只删除本工具写过的文件，不会误删目录里的其它内容。
 
 **快捷键**：`Ctrl+Enter` 开始队列，`Esc` 停止（有弹窗时先关弹窗）。参数与地址存在浏览器 `localStorage`，下次打开自动回填；参数在「加入队列」时快照进任务，所以运行中改设置不影响正在下载的任务，只对之后添加的任务生效。
 
@@ -251,6 +252,8 @@ downloads/<任务名>/
 | 断电后重启 | 队列自动恢复，任务显示「已中断」，点「继续」只补缺失分片 |
 | `state/queue.json` 也丢了 | 扫盘认领，进度显示依然正确 |
 | 成品已完整 | 直接显示「完成」，可下载，不会再下一遍 |
+| 清理过分片 | 重启后仍是「完成」，成品可下载，只是不能再续传 |
+| 清空已完成记录 | 重启后不会自动复活；需要时可点「恢复任务」重新认领 |
 | 重新导入同一个链接 | 命中已有目录就复用续传，**不会**另建 `名字-2` 重下 |
 | 老版本目录（没记 URL） | 认领后提示「绑定链接」，粘上地址即可续传 |
 
@@ -259,7 +262,11 @@ downloads/<任务名>/
 想自己验证，跑自带的端到端脚本（会真的 `kill -9` 服务再重启）：
 
 ```bash
-npm run test:crash     # 29 项断言，含「存档丢失靠磁盘认领」「老目录绑定链接续传」
+npm run test:all       # 9 套 / 127 项断言
+npm run test:crash     # 29 项：存档丢失靠磁盘认领、老目录绑定链接续传
+npm run test:state     # 清理分片 / 清空完成后重启的状态语义
+npm run test:playlist  # 直播 / BYTERANGE / #EXTM3U / METHOD=NONE 边界
+npm run test:pacing    # 慢片后不连续补发
 ```
 
 ## HTTP 接口
@@ -273,14 +280,19 @@ npm run test:crash     # 29 项断言，含「存档丢失靠磁盘认领」「�
 | :--- | :--- | :--- |
 | `GET` | `/api/events` | SSE 事件流（进度 / 日志 / 队列） |
 | `GET` | `/api/state` | 当前状态与可用产物 |
-| `GET` `POST` | `/api/queue` | 队列快照 / `{urls, ...}` 入队（自动去重、超上限拒绝） |
+| `POST` | `/api/probe` | 只读播放列表，返回总片数 / 时长 / 断点数 |
+| `GET` `POST` | `/api/queue` | 队列快照 / `{urls, ...}` 入队（自动去重、目录冲突 / 超上限拒绝） |
 | `DELETE` | `/api/queue?id=` | 移除待处理项（运行中的不可删） |
 | `POST` | `/api/queue/start` · `/stop` · `/clear` | 开始 / 停止 / 清除已完成记录 |
 | `POST` | `/api/queue/note` | `{id, note}` 改名（备注名即目录名与文件名） |
+| `POST` | `/api/queue/move` | `{id, delta}` 上移 / 下移一位 |
+| `POST` | `/api/queue/prioritize` | `{id}` 插到队首；必要时让当前任务暂停让位 |
+| `POST` | `/api/queue/yield` | 当前任务暂停让位，队列继续下一条 |
 | `POST` | `/api/queue/retry` · `/retry-all` | 重新排队（只补缺失分片） |
 | `POST` | `/api/queue/recover` | 重新扫描磁盘，认领断电前的任务目录 |
 | `POST` | `/api/queue/attach` | `{id, url}` 给老任务补原始链接 |
-| `GET` `DELETE` | `/api/files` | 扫描任务目录 / 删除该任务全部文件 |
+| `POST` | `/api/start` | 兼容旧接口：入队并立即开始 |
+| `GET` `DELETE` | `/api/files` | 扫描任务目录 / 删除该任务文件（外部目录只删工具写过的文件） |
 | `GET` | `/api/download` | 下载成品，支持 `?task=` `?job=` `?path=` |
 | `POST` | `/api/control` | `{action: pause \| resume \| cancel}` |
 | `POST` | `/api/cleanup` | 删除分片目录，保留成品 |
@@ -294,9 +306,10 @@ npm run test:crash     # 29 项断言，含「存档丢失靠磁盘认领」「�
 | 不支持 | 行为 |
 | :--- | :--- |
 | 主播放列表（master / 多码率） | 列出变体地址让你选，不自动挑 |
-| 加密分片 `#EXT-X-KEY` | 直接报错退出 |
+| 加密分片 `#EXT-X-KEY`（非 `METHOD=NONE`） | 直接报错退出 |
 | fMP4 分片 `#EXT-X-MAP` | 直接报错退出 |
-| 直播流 | 只处理带 `#EXT-X-ENDLIST` 的静态点播 |
+| 字节范围分片 `#EXT-X-BYTERANGE` | 直接报错退出，绝不把整文件重复拼进成品 |
+| 直播流 | 只处理带 `#EXT-X-ENDLIST` 或 `#EXT-X-PLAYLIST-TYPE:VOD` 的静态点播 |
 | DRM（Widevine / FairPlay / PlayReady） | 完全不涉及 |
 
 静默降级往往三小时后才暴露成「文件损坏」，所以这里选择立刻失败。
@@ -379,11 +392,11 @@ src/
 ├── cli.ts             # 命令行入口
 └── server.ts          # GUI 后端（HTTP + SSE）
 web/                   # 原生 JS / CSS / HTML 前端
-tests/                 # 断电续传端到端验证（真的 kill -9）
+tests/                 # 9 套回归：断电 / 区间 / 队列 / 播放列表 / 节拍 / 目录安全 / 状态
 deploy/                # systemd 单元
 ```
 
-约 2700 行 TypeScript + 3100 行原生前端，**零运行时依赖**。
+约 3100 行 TypeScript + 3200 行原生前端，**零运行时依赖**。
 
 ## 开发
 

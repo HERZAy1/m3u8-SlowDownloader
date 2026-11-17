@@ -501,6 +501,15 @@ button {
   height: 13px;
 }
 
+.btn:focus-visible,
+.chip:focus-visible,
+.adv-toggle:focus-visible,
+.icon-btn:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
   border-color: var(--line-strong);

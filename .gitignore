@@ -4,8 +4,8 @@ m3u8-downloader-task.md
 # 下载产物
 downloads/
 tmp-*/
-tests/.work/
-tests/.work-range/
+# 测试临时目录
+tests/.work*/
 
 # 队列存档（断电恢复用）
 state/

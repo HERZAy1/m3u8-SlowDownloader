@@ -7,6 +7,18 @@ export class PlaylistError extends Error {
   }
 }
 
+/** 单个播放列表允许的最大分片数，防止异常清单耗尽内存/磁盘。 */
+const MAX_SEGMENTS = 100_000;
+
+/** 本工具只处理静态 VOD；直播/事件列表必须显式拒绝，不能静默只下一次。 */
+export function assertVod(playlist: Playlist): void {
+  if (!playlist.isVod) {
+    throw new PlaylistError(
+      '这是直播/非点播播放列表（缺少 #EXT-X-ENDLIST 或 #EXT-X-PLAYLIST-TYPE:VOD），本工具只支持静态 VOD',
+    );
+  }
+}
+
 /**
  * 解析 media playlist。
  *
@@ -22,6 +34,7 @@ export function parsePlaylist(text: string, baseUrl: string): Playlist {
   let pendingDiscontinuity = false;
   let discontinuityCount = 0;
   let isVod = false;
+  let sawHeader = false;
   let sawStreamInf = false;
   let index = 0;
 
@@ -29,17 +42,42 @@ export function parsePlaylist(text: string, baseUrl: string): Playlist {
     const line = raw.trim();
     if (!line) continue;
 
+    // HLS 清单必须以 #EXTM3U 开头；没有它时任意文本都会被误当成“分片”。
+    if (!sawHeader) {
+      if (line !== '#EXTM3U') {
+        throw new PlaylistError('不是有效的 m3u8：缺少 #EXTM3U 文件头');
+      }
+      sawHeader = true;
+      continue;
+    }
+
     if (line.startsWith('#EXT-X-STREAM-INF')) {
       sawStreamInf = true;
       continue;
     }
 
-    if (line.startsWith('#EXT-X-KEY')) {
-      throw new PlaylistError('列表包含 #EXT-X-KEY（加密分片），本工具不支持（决策 D4）');
+    if (line.startsWith('#EXT-X-KEY') || line.startsWith('#EXT-X-SESSION-KEY')) {
+      const method = /METHOD\s*=\s*([^,\s]+)/i.exec(line)?.[1]?.toUpperCase();
+      // METHOD=NONE 只是“不加密”的标记，不应像真正的加密清单一样报错。
+      if (method !== 'NONE') {
+        throw new PlaylistError('列表包含加密密钥（#EXT-X-KEY），本工具不支持（决策 D4）');
+      }
+      continue;
     }
 
     if (line.startsWith('#EXT-X-MAP')) {
       throw new PlaylistError('列表包含 #EXT-X-MAP（fMP4 分片），本工具仅支持 TS（决策 D5）');
+    }
+
+    if (line.startsWith('#EXT-X-BYTERANGE')) {
+      throw new PlaylistError(
+        '列表包含 #EXT-X-BYTERANGE（字节范围分片），本工具不支持；请改用普通 TS 分片列表',
+      );
+    }
+
+    if (line.startsWith('#EXT-X-PLAYLIST-TYPE')) {
+      if (/:VOD\b/i.test(line)) isVod = true;
+      continue;
     }
 
     if (line === '#EXT-X-DISCONTINUITY') {
@@ -67,6 +105,13 @@ export function parsePlaylist(text: string, baseUrl: string): Playlist {
       continue;
     }
 
+    if (!(pendingDuration > 0)) {
+      throw new PlaylistError(`分片 ${line} 缺少有效的 #EXTINF 时长`);
+    }
+    if (segments.length >= MAX_SEGMENTS) {
+      throw new PlaylistError(`播放列表分片数量超过上限（${MAX_SEGMENTS}）`);
+    }
+
     index += 1;
     segments.push({
       index,
@@ -76,6 +121,10 @@ export function parsePlaylist(text: string, baseUrl: string): Playlist {
     });
     pendingDiscontinuity = false;
     pendingDuration = 0;
+  }
+
+  if (!sawHeader) {
+    throw new PlaylistError('不是有效的 m3u8：缺少 #EXTM3U 文件头');
   }
 
   if (variants.length > 0) {

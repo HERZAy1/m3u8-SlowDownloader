@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { readFile, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { scanTaskDir } from './files.ts';
 import { CHROME_HEADERS } from './headers.ts';
 import { FetchHttpClient } from './http.ts';
-import { parsePlaylist } from './playlist.ts';
+import { assertVod, parsePlaylist } from './playlist.ts';
 import { DownloadQueue } from './queue.ts';
 import type { SegmentRange, ServerEvent, TaskFileInfo } from './types.ts';
 
@@ -21,7 +21,18 @@ const STATE_DIR = process.env.STATE_DIR
   ? resolve(process.env.STATE_DIR)
   : resolve(process.cwd(), 'state');
 const QUEUE_FILE = join(STATE_DIR, 'queue.json');
-const MAX_QUEUE = Number(process.env.MAX_QUEUE ?? 20);
+const rawMaxQueue = Number(process.env.MAX_QUEUE ?? 20);
+const MAX_QUEUE = Number.isInteger(rawMaxQueue) && rawMaxQueue > 0 ? rawMaxQueue : 20;
+/** JSON 请求体上限；本地工具不需要接收超大 body。 */
+const MAX_JSON_BYTES = 1024 * 1024;
+
+class RequestError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -59,7 +70,15 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    size += buf.length;
+    if (size > MAX_JSON_BYTES) {
+      throw new RequestError(413, `请求体过大（上限 ${MAX_JSON_BYTES} 字节）`);
+    }
+    chunks.push(buf);
+  }
   if (chunks.length === 0) return {};
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
 }
@@ -105,11 +124,28 @@ function rangeFrom(value: unknown): SegmentRange | undefined {
 }
 
 function paramsFrom(body: Record<string, unknown>) {
+  const speedRaw = Number(body.speed ?? 2);
+  const speed = Number.isFinite(speedRaw) && speedRaw >= 0 ? Math.min(speedRaw, 20) : 2;
+
+  const jitterRaw = Number(body.jitter ?? 300);
+  const jitterMs = Number.isFinite(jitterRaw) ? Math.min(Math.max(0, jitterRaw), 5000) : 300;
+
+  const retriesRaw = Number(body.retries ?? 3);
+  const retries = Number.isFinite(retriesRaw)
+    ? Math.min(Math.max(0, Math.trunc(retriesRaw)), 10)
+    : 3;
+
+  const limitRaw = body.limit === undefined ? undefined : Number(body.limit);
+  const limit =
+    limitRaw !== undefined && Number.isFinite(limitRaw) && limitRaw >= 1
+      ? Math.trunc(limitRaw)
+      : undefined;
+
   return {
-    speed: Number(body.speed ?? 2),
-    jitterMs: Number(body.jitter ?? 300),
-    retries: Number(body.retries ?? 3),
-    limit: body.limit ? Number(body.limit) : undefined,
+    speed,
+    jitterMs,
+    retries,
+    limit,
     range: rangeFrom(body.range),
     outDir:
       typeof body.outDir === 'string' && body.outDir.trim() ? body.outDir.trim() : undefined,
@@ -128,6 +164,54 @@ async function dirSize(dir: string): Promise<number> {
     else total += (await stat(full).catch(() => ({ size: 0 }))).size;
   }
   return total;
+}
+
+function isInsideDownloads(dir: string): boolean {
+  const abs = resolve(dir);
+  return abs === DOWNLOADS_DIR || abs.startsWith(DOWNLOADS_DIR + sep);
+}
+
+/**
+ * 删除任务文件。
+ *
+ * downloads/ 内的目录是工具自己的任务目录，可以整目录删除；
+ * 用户通过“输出目录”指定的外部目录只能删除本工具写过的已知文件，
+ * 绝不能因为点“删除”而把用户自己的整个目录删掉。
+ */
+async function deleteTaskDir(dir: string): Promise<{ freedBytes: number; removed: boolean }> {
+  const abs = resolve(dir);
+
+  if (isInsideDownloads(abs)) {
+    const freedBytes = await dirSize(abs);
+    await rm(abs, { recursive: true, force: true });
+    return { freedBytes, removed: true };
+  }
+
+  // 外部目录：必须能证明这是本工具的任务目录。
+  const marker =
+    (await stat(join(abs, 'state.json')).catch(() => null)) ||
+    (await stat(join(abs, 'playlist.m3u8')).catch(() => null));
+  if (!marker) return { freedBytes: 0, removed: false };
+
+  let freedBytes = 0;
+  for (const name of ['output.ts', 'output.fixed.ts', 'playlist.m3u8', 'state.json', 'output.ts.part']) {
+    const file = join(abs, name);
+    const info = await stat(file).catch(() => null);
+    if (!info || !info.isFile()) continue;
+    freedBytes += info.size;
+    await rm(file, { force: true });
+  }
+
+  const segmentsDir = join(abs, 'segments');
+  const segmentsInfo = await stat(segmentsDir).catch(() => null);
+  if (segmentsInfo?.isDirectory()) {
+    freedBytes += await dirSize(segmentsDir);
+    await rm(segmentsDir, { recursive: true, force: true });
+  }
+
+  // 只有目录已经空了才移除目录本身；有用户文件时 rmdir 会失败，这是期望行为。
+  await rmdir(abs).catch(() => {});
+  return { freedBytes, removed: true };
 }
 
 /**
@@ -241,6 +325,7 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
           const client = new FetchHttpClient({ ...CHROME_HEADERS }, 20_000);
           const text = (await client.get(target)).toString('utf8');
           const playlist = parsePlaylist(text, target);
+          assertVod(playlist);
           json(res, 200, {
             total: playlist.segments.length,
             totalDuration: playlist.totalDuration,
@@ -334,7 +419,7 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
 
       // 重新扫一遍磁盘，把断电/崩溃前留下的任务目录认领回队列
       if (path === '/api/queue/recover' && req.method === 'POST') {
-        const result = await queue.recoverFromDisk();
+        const result = await queue.recoverFromDisk(true);
         json(res, 200, { ok: true, ...result, queue: queue.snapshot() });
         return;
       }
@@ -491,6 +576,10 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
           json(res, 404, { error: '找不到该任务的目录' });
           return;
         }
+        if (queue.isRunningDir(taskDir)) {
+          json(res, 409, { error: '正在下载的任务不能清理分片，请先停止任务' });
+          return;
+        }
 
         const segmentsDir = join(taskDir, 'segments');
         if (!(await stat(segmentsDir).catch(() => null))) {
@@ -522,16 +611,23 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
           json(res, 404, { error: '找不到该任务的文件' });
           return;
         }
+        if (queue.isRunningDir(target.path)) {
+          json(res, 409, { error: '正在下载的任务不能删除文件，请先停止任务' });
+          return;
+        }
         // 兜底校验：只允许删除扫描出来的那两个来源目录
-        const fromDownloads = target.path.startsWith(DOWNLOADS_DIR + sep);
+        const fromDownloads = isInsideDownloads(target.path);
         const fromQueue = queue.outDirs().includes(target.path);
         if (!fromDownloads && !fromQueue) {
           json(res, 403, { error: '路径不允许删除' });
           return;
         }
-        const freedBytes = target.totalBytes;
-        await rm(target.path, { recursive: true, force: true });
-        json(res, 200, { ok: true, freedBytes });
+        const result = await deleteTaskDir(target.path);
+        if (!result.removed) {
+          json(res, 409, { error: '该目录不像本工具的任务目录，已拒绝删除' });
+          return;
+        }
+        json(res, 200, { ok: true, freedBytes: result.freedBytes });
         return;
       }
 
@@ -560,6 +656,11 @@ const server = createServer((req, res) => {  void (async (): Promise<void> => {
 
       res.writeHead(405).end('method not allowed');
     } catch (err) {
+      if (err instanceof RequestError) {
+        if (!res.headersSent) json(res, err.status, { error: err.message });
+        else res.end();
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       if (!res.headersSent) json(res, 500, { error: message });
       else res.end();

@@ -1,7 +1,8 @@
 import { mkdir, readFile, rename, stat } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { scanDiskTasks } from './disk.ts';
 import type { DiskScan } from './disk.ts';
+import { CHROME_HEADERS } from './headers.ts';
 import { FetchHttpClient } from './http.ts';
 import { parsePlaylist } from './playlist.ts';
 import { writeAtomic } from './store.ts';
@@ -41,21 +42,53 @@ export interface AddResult {
   added: number;
   duplicates: number;
   overflow: number;
+  /** 自定义 outDir 已被别的任务占用 */
+  conflicts: number;
   /** 复用了磁盘上已有目录（续传）的数量 */
   reused: number;
   /** 磁盘上已经是完整成品的数量（不下载，直接可下载） */
   completed: number;
 }
 
+/** Windows 保留设备名不能作为目录名（即使不带扩展名）。 */
+const RESERVED_NAMES = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  'com1',
+  'com2',
+  'com3',
+  'com4',
+  'com5',
+  'com6',
+  'com7',
+  'com8',
+  'com9',
+  'lpt1',
+  'lpt2',
+  'lpt3',
+  'lpt4',
+  'lpt5',
+  'lpt6',
+  'lpt7',
+  'lpt8',
+  'lpt9',
+]);
+
 /** 把备注清洗成安全的目录名 */
 export function sanitizeNote(input: string): string {
   const cleaned = input
     .trim()
-    .replace(/[\\/:*?"<>|\r\n\t]/g, '')
+    .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]/g, '')
     .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
     .slice(0, 60)
     .trim();
-  if (cleaned === '.' || cleaned === '..') return '';
+  if (!cleaned || cleaned === '.' || cleaned === '..') return '';
+  if (RESERVED_NAMES.has(cleaned.toLowerCase())) return `${cleaned}_`;
+  const dot = cleaned.indexOf('.');
+  if (dot > 0 && RESERVED_NAMES.has(cleaned.slice(0, dot).toLowerCase())) return `_${cleaned}`;
   return cleaned;
 }
 
@@ -64,7 +97,7 @@ function taskNameFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
     const base = parsed.pathname.split('/').filter(Boolean).pop() ?? 'task';
-    return base.replace(/\.m3u8?$/i, '') || 'task';
+    return sanitizeNote(base.replace(/\.m3u8?$/i, '')) || 'task';
   } catch {
     return 'task';
   }
@@ -140,6 +173,10 @@ export class DownloadQueue {
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistInFlight = false;
   private persistQueued = false;
+  /** 被“清空已完成”/“移除”过的目录：重启时不再自动认领，避免历史任务复活。 */
+  private dismissed = new Set<string>();
+  /** probe 串行链，避免新增/恢复任务时并发请求播放列表。 */
+  private probeChain: Promise<void> = Promise.resolve();
 
   constructor(emit: (event: ServerEvent) => void, config: QueueConfig) {
     this.emit = emit;
@@ -193,6 +230,27 @@ export class DownloadQueue {
     return this.items.map((i) => resolve(i.outDir));
   }
 
+  /** 某个目录是否属于正在下载的任务（文件面板删除前要拦截）。 */
+  isRunningDir(dir: string): boolean {
+    const abs = resolve(dir);
+    return this.items.some((i) => i.status === 'running' && resolve(i.outDir) === abs);
+  }
+
+  /** 该目录是否位于 downloads/ 根目录内（只有这类目录允许整体搬移/删除）。 */
+  private isManagedDir(dir: string): boolean {
+    const abs = resolve(dir);
+    return abs === this.downloadsDir || abs.startsWith(this.downloadsDir + sep);
+  }
+
+  private rememberDismissed(dir: string): void {
+    this.dismissed.add(resolve(dir));
+    // 防止长期使用后存档无限增长；保留最近 200 条即可。
+    if (this.dismissed.size > 200) {
+      const first = this.dismissed.values().next().value;
+      if (first) this.dismissed.delete(first);
+    }
+  }
+
   /* ---------------- 启动恢复 ---------------- */
 
   /** 启动时调用：先读回存档，再扫磁盘补齐。 */
@@ -207,14 +265,18 @@ export class DownloadQueue {
     const raw = await readFile(this.stateFile, 'utf8').catch(() => null);
     if (!raw) return 0;
 
-    let data: { seq?: number; items?: unknown };
+    let data: { seq?: number; items?: unknown; dismissed?: unknown };
     try {
-      data = JSON.parse(raw) as { seq?: number; items?: unknown };
+      data = JSON.parse(raw) as { seq?: number; items?: unknown; dismissed?: unknown };
     } catch {
       return 0;
     }
 
     const list = Array.isArray(data.items) ? data.items : [];
+    const dismissed = Array.isArray(data.dismissed)
+      ? data.dismissed.filter((x): x is string => typeof x === 'string')
+      : [];
+    this.dismissed = new Set(dismissed.map((x) => resolve(x)));
     let restored = 0;
 
     for (const entry of list) {
@@ -241,12 +303,16 @@ export class DownloadQueue {
    * 这是断电恢复的兜底：队列存档丢了也能靠 playlist.m3u8 + segments/ 还原
    * 「哪个目录、属于哪个链接、还缺哪几片、成品在不在」。
    */
-  async recoverFromDisk(): Promise<{ adopted: number; refreshed: number }> {
+  async recoverFromDisk(includeDismissed = false): Promise<{ adopted: number; refreshed: number }> {
     const disk = await scanDiskTasks(this.downloadsDir);
     let adopted = 0;
     let refreshed = 0;
 
     for (const scan of disk) {
+      const dismissed = this.dismissed.has(scan.dir);
+      if (dismissed && !includeDismissed) continue;
+      if (dismissed) this.dismissed.delete(scan.dir);
+
       const existing = this.items.find((i) => resolve(i.outDir) === scan.dir);
       if (existing) {
         if (existing.status === 'running') continue;
@@ -278,14 +344,18 @@ export class DownloadQueue {
   /** 用磁盘现状刷新一条已有记录（分片数、缺口、成品）。 */
   private refreshFromScan(item: QueueItem, scan: DiskScan): boolean {
     let changed = false;
-    const complete = scan.hasOutput && scan.missing.length === 0;
+    // 清理过 segments/ 的任务：成品仍在且 state 标记 done，应继续视为完成，
+    // 不能因为分片被清掉就改写成“中断”并诱导用户重下。
+    const complete =
+      scan.hasOutput && (scan.missing.length === 0 || scan.state?.status === 'done');
+    const downloaded = complete ? scan.total : scan.present;
 
     if (scan.total > 0 && item.total !== scan.total) {
       item.total = scan.total;
       changed = true;
     }
-    if (item.downloaded !== scan.present) {
-      item.downloaded = scan.present;
+    if (item.downloaded !== downloaded) {
+      item.downloaded = downloaded;
       changed = true;
     }
     if (item.elapsedMs === 0 && scan.elapsedMs > 0) {
@@ -362,14 +432,16 @@ export class DownloadQueue {
   }
 
   private itemFromScan(scan: DiskScan, url: string, params: QueueParams): QueueItem {
-    const complete = scan.hasOutput && scan.missing.length === 0;
+    const complete =
+      scan.hasOutput && (scan.missing.length === 0 || scan.state?.status === 'done');
     const state = scan.state;
 
     return {
       id: this.nextId(),
       url,
       params: {
-        speed: typeof state?.speed === 'number' && state.speed > 0 ? state.speed : params.speed,
+        speed:
+          typeof state?.speed === 'number' && state.speed >= 0 ? state.speed : params.speed,
         jitterMs: typeof state?.jitterMs === 'number' ? state.jitterMs : params.jitterMs,
         retries: typeof state?.retries === 'number' ? state.retries : params.retries,
         limit: undefined,
@@ -381,11 +453,11 @@ export class DownloadQueue {
       taskName: scan.name,
       outDir: scan.relDir,
       // 恢复时优先用 state.json 里记的备注名，否则队列与文件面板会显示成目录名
-      note: state?.note?.trim() || scan.name,
+      note: (typeof state?.note === 'string' && state.note.trim()) || scan.name,
       addedAt: scan.startedAt ?? Date.now(),
       startedAt: scan.startedAt ?? undefined,
       total: scan.total,
-      downloaded: scan.present,
+      downloaded: complete ? scan.total : scan.present,
       failed: complete ? [] : scan.missing,
       bytes: 0,
       elapsedMs: scan.elapsedMs,
@@ -413,7 +485,14 @@ export class DownloadQueue {
         note,
         taskName: item.taskName,
         total: item.total,
-        status: 'interrupted',
+        // 改名/补链接时不要把已完成任务写回 interrupted；否则清理过分片的
+        // 成品下次启动会被误判为“中断”。
+        status:
+          item.status === 'done'
+            ? 'done'
+            : item.status === 'failed'
+              ? 'failed'
+              : 'interrupted',
         updatedAt: new Date().toISOString(),
       };
       await writeAtomic(path, `${JSON.stringify(merged, null, 2)}\n`);
@@ -433,6 +512,7 @@ export class DownloadQueue {
     let added = 0;
     let duplicates = 0;
     let overflow = 0;
+    let conflicts = 0;
     let reused = 0;
     let completed = 0;
 
@@ -480,6 +560,7 @@ export class DownloadQueue {
         } else {
           this.items.push(item);
         }
+        this.dismissed.delete(resolve(onDisk.dir));
 
         await this.stampState(item, item.note ?? item.taskName);
         reused += 1;
@@ -491,6 +572,23 @@ export class DownloadQueue {
         continue;
       }
 
+      // 用户自定义 outDir 时，不能和另一个任务共用同一个目录：
+      // 分段文件名固定为 0001.ts…，共用目录会互相覆盖。
+      const explicitOut = !baseNote && params.outDir?.trim() ? params.outDir.trim() : '';
+      if (explicitOut) {
+        const abs = resolve(explicitOut);
+        const usedByQueue = this.items.some((i) => resolve(i.outDir) === abs);
+        const usedByDisk = disk.some(
+          (d) =>
+            d.dir === abs &&
+            !(sameUrl(d.url, url) && sameRange(d.state?.range, params.range)),
+        );
+        if (usedByQueue || usedByDisk) {
+          conflicts += 1;
+          continue;
+        }
+      }
+
       let note: string | undefined;
       let outDir: string;
 
@@ -499,12 +597,15 @@ export class DownloadQueue {
         note = await this.uniqueName(wanted);
         outDir = `downloads/${note}`;
       } else {
-        // 按需下载的默认目录带区间后缀，避免与整片下载、其他区间互相覆盖
+        // 按需下载的默认目录带区间后缀，避免与整片下载、其他区间互相覆盖。
+        // 默认名也必须经过 uniqueName：不同主机上的 index.m3u8/play.m3u8 很常见，
+        // 否则两个任务会写进同一个目录并互相覆盖。
         const suffix = params.range ? `-${params.range.start}-${params.range.end}` : '';
+        const unique = await this.uniqueName(`${taskNameFromUrl(url)}${suffix}`);
         outDir =
           params.outDir && params.outDir.trim()
             ? params.outDir.trim()
-            : `downloads/${taskNameFromUrl(url)}${suffix}`;
+            : `downloads/${unique}`;
       }
 
       this.items.push({
@@ -524,12 +625,13 @@ export class DownloadQueue {
         outputPath: null,
         durationSec: null,
       });
+      this.dismissed.delete(resolve(outDir));
       added += 1;
       void this.probe(this.items[this.items.length - 1] as QueueItem);
     }
 
     this.publish();
-    return { added, duplicates, overflow, reused, completed };
+    return { added, duplicates, overflow, conflicts, reused, completed };
   }
 
   /** 在磁盘扫描结果里找这个链接（且区间一致）对应的目录 */
@@ -581,18 +683,25 @@ export class DownloadQueue {
     if (item.status === 'pending' || item.status === 'interrupted') {
       const unique = await this.uniqueName(clean);
       const oldDir = resolve(item.outDir);
+      const managed = this.isManagedDir(oldDir);
       const newDir = resolve(`downloads/${unique}`);
-      if (oldDir !== newDir && (await stat(oldDir).catch(() => null))) {
-        try {
-          await rename(oldDir, newDir);
-        } catch {
-          return { ok: false, error: '重命名失败：目录可能被占用' };
+
+      // 只有 downloads/ 下的任务目录才能整体搬移；用户自定义的外部输出目录
+      // 只更新显示名，绝不能因为改备注把用户自己的目录搬走。
+      if (managed) {
+        if (oldDir !== newDir && (await stat(oldDir).catch(() => null))) {
+          try {
+            await rename(oldDir, newDir);
+          } catch {
+            return { ok: false, error: '重命名失败：目录可能被占用' };
+          }
+          if (item.outputPath) item.outputPath = join(newDir, basename(item.outputPath));
         }
-        if (item.outputPath) item.outputPath = join(newDir, basename(item.outputPath));
+        item.outDir = `downloads/${unique}`;
       }
+
       item.note = unique;
       item.taskName = unique;
-      item.outDir = `downloads/${unique}`;
       await this.stampState(item, unique);
       this.publish();
       return { ok: true, note: unique };
@@ -618,23 +727,27 @@ export class DownloadQueue {
     const unique = await this.uniqueName(name);
     const oldDir = resolve(item.outDir);
     const newDir = resolve(`downloads/${unique}`);
+    const managed = this.isManagedDir(oldDir);
 
-    if (oldDir !== newDir) {
-      try {
-        await rename(oldDir, newDir);
-      } catch {
-        return { ok: false, error: '重命名失败：目录可能不存在或被占用' };
+    if (managed) {
+      if (oldDir !== newDir) {
+        try {
+          await rename(oldDir, newDir);
+        } catch {
+          return { ok: false, error: '重命名失败：目录可能不存在或被占用' };
+        }
+      }
+      item.outDir = `downloads/${unique}`;
+      if (item.outputPath) {
+        const fileName = item.outputPath.split(/[\\/]/).pop() || 'output.ts';
+        item.outputPath = join(newDir, fileName);
       }
     }
+    // 外部输出目录只改显示名；outDir / outputPath 保持用户指定的位置。
 
     item.note = unique;
     item.taskName = unique;
-    item.outDir = `downloads/${unique}`;
-
-    if (item.outputPath) {
-      const fileName = item.outputPath.split(/[\\/]/).pop() || 'output.ts';
-      item.outputPath = join(newDir, fileName);
-    }
+    await this.stampState(item, unique);
     return { ok: true, note: unique };
   }
 
@@ -653,10 +766,17 @@ export class DownloadQueue {
   }
 
   /** 入队后探测播放列表总时长，用于队列总耗时估算；失败不影响下载。 */
-  private async probe(item: QueueItem): Promise<void> {
+  private probe(item: QueueItem): Promise<void> {
+    // 串行化 probe：新增/恢复多个任务时不要并发打播放列表，
+    // 避免和正在下载的任务同时发请求，也避免被站点看成批量探测。
+    this.probeChain = this.probeChain.then(() => this.probeOne(item)).catch(() => {});
+    return this.probeChain;
+  }
+
+  private async probeOne(item: QueueItem): Promise<void> {
     if (!item.url) return;
     try {
-      const client = new FetchHttpClient({}, 15_000);
+      const client = new FetchHttpClient({ ...CHROME_HEADERS }, 15_000);
       const text = (await client.get(item.url)).toString('utf8');
       const playlist = parsePlaylist(text, item.url);
       const all = playlist.segments;
@@ -682,7 +802,9 @@ export class DownloadQueue {
     const index = this.items.findIndex((i) => i.id === id);
     if (index < 0) return { ok: false, reason: '没有这个任务' };
     if (this.items[index].status === 'running') return { ok: false, reason: '正在运行的任务不能删除' };
+    const removed = this.items[index] as QueueItem;
     this.items.splice(index, 1);
+    this.rememberDismissed(removed.outDir);
     this.publish();
     return { ok: true };
   }
@@ -754,9 +876,15 @@ export class DownloadQueue {
 
   clearFinished(): number {
     const before = this.items.length;
-    this.items = this.items.filter(
-      (i) => i.status === 'pending' || i.status === 'running' || i.status === 'interrupted',
-    );
+    const kept: QueueItem[] = [];
+    for (const item of this.items) {
+      if (item.status === 'pending' || item.status === 'running' || item.status === 'interrupted') {
+        kept.push(item);
+      } else {
+        this.rememberDismissed(item.outDir);
+      }
+    }
+    this.items = kept;
     this.publish();
     return before - this.items.length;
   }
@@ -829,10 +957,15 @@ export class DownloadQueue {
     if (this.loopRunning) return;
     this.loopRunning = true;
     this.stopped = false;
+    this.paused = false;
 
     try {
       for (;;) {
         if (this.stopped) break;
+        if (this.paused) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
         const next = this.items.find((i) => i.status === 'pending');
         if (!next) break;
         await this.runOne(next);
@@ -973,6 +1106,7 @@ export class DownloadQueue {
         version: 1,
         savedAt: new Date().toISOString(),
         seq: this.seq,
+        dismissed: [...this.dismissed],
         items: this.items,
       };
       await writeAtomic(this.stateFile, `${JSON.stringify(payload, null, 2)}\n`);
@@ -989,6 +1123,8 @@ export class DownloadQueue {
 }
 
 function toSnapshot(item: QueueItem): QueueItemSnapshot {
+  const speed = item.params.speed;
+  const paced = Number.isFinite(speed) && speed > 0;
   return {
     id: item.id,
     url: item.url,
@@ -1004,15 +1140,12 @@ function toSnapshot(item: QueueItem): QueueItemSnapshot {
     durationSec: item.durationSec,
     range: item.params.range,
     playlistTotal: item.playlistTotal,
-    estimateMs:
-      item.durationSec !== null
-        ? (item.durationSec * 1000) / Math.max(0.1, item.params.speed)
-        : null,
+    estimateMs: paced && item.durationSec !== null ? (item.durationSec * 1000) / speed : null,
     remainingMs: (() => {
-      if (item.durationSec === null) return null;
+      if (!paced || item.durationSec === null) return null;
       const total = item.total;
       const left = total > 0 ? Math.max(0, total - item.downloaded) / total : 1;
-      return (item.durationSec * 1000 * left) / Math.max(0.1, item.params.speed);
+      return (item.durationSec * 1000 * left) / speed;
     })(),
     error: item.error,
     addedAt: item.addedAt,

@@ -4,7 +4,7 @@ import { CancelledError, TaskControl } from './control.ts';
 import { CHROME_HEADERS } from './headers.ts';
 import { FetchHttpClient } from './http.ts';
 import { mergeSegments } from './merge.ts';
-import { parsePlaylist } from './playlist.ts';
+import { assertVod, parsePlaylist } from './playlist.ts';
 import { runSchedule } from './scheduler.ts';
 import { SegmentStore } from './store.ts';
 import type { StateStatus, TaskStateFile } from './store.ts';
@@ -101,6 +101,7 @@ export class DownloadTask {
     this.emit({ type: 'phase', phase: 'parsing' });
     const text = (await client.get(this.options.url)).toString('utf8');
     const playlist = parsePlaylist(text, this.options.url);
+    assertVod(playlist);
 
     // 按需下载优先：只取区间内的分片，文件序号仍是它在原视频里的序号
     const range = clampRange(this.options.range, playlist.segments.length);
@@ -175,6 +176,7 @@ export class DownloadTask {
 
     let completed = 0;
     let completedDuration = 0;
+    let failedCount = 0;
     let bytes = 0;
     let currentIndex = 0;
 
@@ -219,7 +221,7 @@ export class DownloadTask {
           index: currentIndex,
           total,
           completed,
-          failedCount: 0,
+          failedCount,
           bytes,
           elapsedMs,
           etaMs: speed > 0 ? (remainingDuration * 1000) / speed : 0,
@@ -251,6 +253,8 @@ export class DownloadTask {
               completed += 1;
               completedDuration += report.duration;
               bytes += report.bytes;
+            } else {
+              failedCount += 1;
             }
             this.emit({
               type: 'segment',
@@ -281,13 +285,34 @@ export class DownloadTask {
         await mergeSegments(
           store,
           segments.map((seg) => seg.index),
-          { outputPath },
+          {
+            outputPath,
+            signal: this.control.signal,
+            onProgress: (done, mergeTotal) => {
+              this.emit({
+                type: 'progress',
+                snapshot: {
+                  phase: 'merging',
+                  index: done,
+                  total: mergeTotal,
+                  completed: done,
+                  failedCount: 0,
+                  bytes,
+                  elapsedMs: elapsedOf(),
+                  etaMs: 0,
+                  speed,
+                },
+              });
+            },
+          },
         );
+        this.control.throwIfCancelled();
 
         if (this.options.remux) {
           this.emit({ type: 'phase', phase: 'remuxing' });
           const fixedPath = outputPath.replace(/\.ts$/, '.fixed.ts');
-          await remuxWithFfmpeg(outputPath, fixedPath);
+          await remuxWithFfmpeg(outputPath, fixedPath, this.control.signal);
+          this.control.throwIfCancelled();
           outputPath = fixedPath;
         }
       }
@@ -341,17 +366,61 @@ export class DownloadTask {
  * 用 ffmpeg 重建时间戳。203 个 DISCONTINUITY 会让直接拼接的 TS 时间轴跳变，
  * 若播放出现音画不同步，用这个兜底（决策 D5 的例外路径）。
  */
-function remuxWithFfmpeg(input: string, output: string): Promise<void> {
+function remuxWithFfmpeg(input: string, output: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new CancelledError());
+
   return new Promise((resolve, reject) => {
     const child = spawn(
       'ffmpeg',
-      ['-y', '-fflags', '+genpts', '-i', input, '-c', 'copy', '-copyts', '-muxdelay', '0', output],
+      [
+        '-nostdin',
+        '-y',
+        '-fflags',
+        '+genpts',
+        '-i',
+        input,
+        '-c',
+        'copy',
+        '-copyts',
+        '-muxdelay',
+        '0',
+        output,
+      ],
       { stdio: 'inherit' },
     );
-    child.on('error', (err) => reject(new Error(`无法启动 ffmpeg：${err.message}`)));
+
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: () => void = () => {};
+    const finish = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (err) reject(err);
+      else resolve();
+    };
+    onAbort = (): void => {
+      child.kill('SIGKILL');
+      finish(new CancelledError());
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error('ffmpeg 转封装超时（15 分钟），已终止'));
+    }, 15 * 60 * 1000);
+
+    child.on('error', (err) => finish(new Error(`无法启动 ffmpeg：${err.message}`)));
     child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg 退出码 ${code}`));
+      if (settled) return;
+      if (signal?.aborted) finish(new CancelledError());
+      else if (code === 0) finish();
+      else finish(new Error(`ffmpeg 退出码 ${code}`));
     });
   });
 }

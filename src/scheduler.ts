@@ -60,6 +60,11 @@ export async function runSchedule(
 ): Promise<SchedulerResult> {
   const t0 = Date.now();
   let cumulative = 0;
+  /**
+   * 慢片造成的“时间轴欠账”。只在实际下载耗时超过本片应有间隔时累加，
+   * 后续分片的计划时刻整体后移——这样单片慢下来不会引发连续补发。
+   */
+  let timelineShiftMs = 0;
 
   const failed: number[] = [];
   let downloaded = 0;
@@ -68,7 +73,11 @@ export async function runSchedule(
   /** 等待到本片的计划时刻。返回最终采用的计划时刻。 */
   let lastTick = 0;
   const waitUntil = async (intervalMs: number): Promise<number> => {
-    const jitter = options.jitterMs > 0 ? (Math.random() * 2 - 1) * options.jitterMs : 0;
+    // 全速模式（speed=0）不应该再叠加随机抖动。
+    const jitter =
+      options.speed > 0 && options.jitterMs > 0
+        ? (Math.random() * 2 - 1) * options.jitterMs
+        : 0;
     for (;;) {
       control.throwIfCancelled();
       if (control.paused) {
@@ -76,7 +85,7 @@ export async function runSchedule(
         continue;
       }
       // 暂停时长通过 totalPausedMs 平移进时间轴，恢复后不会集中补发
-      const plannedAt = t0 + control.totalPausedMs + intervalMs + jitter;
+      const plannedAt = t0 + control.totalPausedMs + timelineShiftMs + intervalMs + jitter;
       const remain = plannedAt - Date.now();
       if (remain <= 0) return plannedAt;
       if (Date.now() - lastTick >= 1000) {
@@ -150,6 +159,7 @@ export async function runSchedule(
       failed.push(segment.index);
     }
 
+    const finishedAt = Date.now();
     hooks.onSegment({
       index: segment.index,
       ok,
@@ -158,8 +168,16 @@ export async function runSchedule(
       duration: segment.duration,
       plannedAt,
       startedAt,
-      finishedAt: Date.now(),
+      finishedAt,
     });
+
+    // 慢片不追赶：实际下载耗时超过本片应有时段的部分，整体平移后续时间轴。
+    // 不这样做的话，多个已经过期的 deadline 会让后续分片连续无间隔发出。
+    if (options.speed > 0) {
+      const allottedMs = (segment.duration * 1000) / options.speed;
+      const downloadMs = finishedAt - startedAt;
+      timelineShiftMs += Math.max(0, downloadMs - allottedMs);
+    }
 
     // 无论成功与否都推进时间轴，保持与视频播放进度对齐
     cumulative += segment.duration;
